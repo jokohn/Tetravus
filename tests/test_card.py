@@ -17,7 +17,11 @@ class TestCard(unittest.TestCase):
         "type_line": data["type_line"],
         "release_year": data["released_at"].split("-")[0],
         "rarity": data["rarity"],
-        "set_name": data["set_name"]
+        "set": data["set"]
+      })
+      self.assertEqual(card.to_json(), {
+        **{k: data[k] for k in ["name", "oracle_text", "mana_cost", "type_line", "rarity", "set"]},
+        "release_year": "2007",
       })
 
 if __name__ == "__main__":

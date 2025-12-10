@@ -8,7 +8,7 @@ class Card:
         self.type_line = type_line
         self.release_year = release_year
         self.rarity = rarity
-        self.set_name = set_name
+        self.set_code = set_name
 
     def from_json(self, json_data):
         return Card(
@@ -18,7 +18,7 @@ class Card:
             json_data["type_line"],
             json_data["released_at"].split("-")[0],
             json_data["rarity"],
-            json_data["set_name"]
+            json_data["set"]
         )
     
     def to_json(self):
@@ -29,5 +29,5 @@ class Card:
             "type_line": self.type_line,
             "release_year": self.release_year,
             "rarity": self.rarity,
-            "set_name": self.set_name
+            "set": self.set_code
         }
