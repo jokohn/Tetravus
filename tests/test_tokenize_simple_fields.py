@@ -3,7 +3,9 @@ import json
 import os
 
 from card import Card
-from tokenizers.tokenize_simple_card_fields import tokenize_release_year, detokenize_release_year, tokenize_rarity, detokenize_rarity, tokenize_set_name, detokenize_set_name
+from tokenizers.tokenize_simple_card_fields import tokenize_release_year, detokenize_release_year, tokenize_rarity, \
+    detokenize_rarity, tokenize_set_name, detokenize_set_name,tokenize_power, detokenize_power, tokenize_toughness, \
+    detokenize_toughness
 from token_stream import TokenStream
 
 class TestTokenizeSimpleFields(unittest.TestCase):
@@ -28,6 +30,20 @@ class TestTokenizeSimpleFields(unittest.TestCase):
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_set_name(token_stream), set_code)
 
+    def tokenize_power(self):
+        power = "4"
+        tokens = tokenize_power(power)
+        self.assertEqual(tokens, ['<power_4>'])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_power(token_stream), power)
+
+    def test_tokenize_toughness(self):
+        toughness = "4"
+        tokens = tokenize_toughness(toughness)
+        self.assertEqual(tokens, ['<toughness_4>'])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_toughness(token_stream), toughness)
+
     def test_tokenize_real_card(self):
         test_file = os.path.join(os.path.dirname(__file__), "test_data", "grizzly_bear.json")
         with open(test_file, "r") as f:
@@ -45,6 +61,17 @@ class TestTokenizeSimpleFields(unittest.TestCase):
         self.assertEqual(tokens, ['<set_10e>'])
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_set_name(token_stream), card.set_code)
+        
+        power = card.power
+        tokens = tokenize_power(power)
+        self.assertEqual(tokens, ['<power_2>'])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_power(token_stream), power)
+        toughness = card.toughness
+        tokens = tokenize_toughness(toughness)
+        self.assertEqual(tokens, ['<toughness_2>'])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_toughness(token_stream), toughness)
 
 if __name__ == "__main__":
     unittest.main()
