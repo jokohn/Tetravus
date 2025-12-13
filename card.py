@@ -18,18 +18,21 @@ class Card:
         self.toughness = toughness
 
     def from_json(self, json_data):
-        return Card(
-            json_data["name"],
-            json_data["oracle_text"],
-            json_data["mana_cost"],
-            json_data["type_line"],
-            json_data["released_at"].split("-")[0],
-            json_data["rarity"],
-            json_data["set"],
-            json_data.get("power", None),
-            json_data.get("toughness", None)
-        )
-    
+        try:
+            return Card(
+                json_data["name"],
+                json_data.get("oracle_text"),
+                json_data["mana_cost"],
+                json_data["type_line"],
+                json_data["released_at"].split("-")[0],
+                json_data["rarity"],
+                json_data["set"],
+                json_data.get("power", None),
+                json_data.get("toughness", None)
+            )
+        except KeyError as e:
+            print(json_data)
+            raise ValueError(f"Missing key: {e}")
     def to_json(self):
         card_json = {
             "name": self.name,
@@ -70,3 +73,7 @@ class Card:
             else:
                 raise ValueError(f"Invalid field: {field}")
         return tokens
+
+    def generate_all_token_string_permutations(self):
+        token_strings = []
+

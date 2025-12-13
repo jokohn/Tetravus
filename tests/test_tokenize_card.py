@@ -8,9 +8,6 @@ from special_tokens import begin_name_token, end_name_token, begin_oracle_text_t
     begin_mana_cost_token, end_mana_cost_token, begin_type_line_token, subtype_break_token, end_type_line_token
 from tokenizers.tokenize_oracle_text import tokenize_oracle_text
 from tokenizers.tokenize_mana_cost import tokenize_mana_cost
-from tokenizers.tokenize_type_line import tokenize_type_line
-from tokenizers.tokenize_simple_card_fields import tokenize_power, tokenize_toughness, tokenize_release_year, \
-    tokenize_rarity, tokenize_set_name
 from tokenizers.tokenize_name import tokenize_name
 from tokenizers.tokenize_type_line import tokenize_type_line
 from tokenizers.tokenize_simple_card_fields import tokenize_power, tokenize_toughness, tokenize_release_year, \
@@ -72,4 +69,4 @@ class TestTokenizeCard(unittest.TestCase):
             data = json.load(f)
         card = Card.from_json(None, data)
         with self.assertRaises(ValueError):
-            tokens = card.generate_tokens(["nonexistent_field"])
+            card.generate_tokens(["nonexistent_field"])
