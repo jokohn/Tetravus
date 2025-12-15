@@ -11,6 +11,7 @@ def tokenize_card_file(cleaned_cards_file_name):
     token_string = ''
     token_counter = 0
     processed_cards, failed_cards = 0, 0
+    token_count = 0
     with open(cleaned_cards_file_name, "r") as f:
         for card_dict in ijson.items(f, 'item'):
             try:
@@ -20,17 +21,18 @@ def tokenize_card_file(cleaned_cards_file_name):
                 failed_cards += 1
                 continue
             processed_cards += 1
-            if processed_cards % 100 == 0:
+            if processed_cards % 500 == 0:
                 print(f"Processed card {processed_cards} of {processed_cards + failed_cards}")
             for token in tokens:
+                token_count += 1
                 token_metadata[token] = token_metadata.setdefault(token, 0) + 1
                 if token not in token_map:
                     token_map[token] = token_counter
                     token_counter += 1
-    return token_map, token_string, token_metadata, processed_cards, failed_cards
+    return token_map, token_string, token_metadata, processed_cards, failed_cards, token_count
 
 def tokenize_card_file_and_save(cleaned_cards_file_name, output_file_name):
-    token_map, token_string, token_metadata, processed_cards, failed_cards = tokenize_card_file(cleaned_cards_file_name)
+    token_map, token_string, token_metadata, processed_cards, failed_cards, token_count = tokenize_card_file(cleaned_cards_file_name)
     with open(output_file_name, "w") as f:
         json.dump({
             "token_map": token_map,
@@ -39,6 +41,7 @@ def tokenize_card_file_and_save(cleaned_cards_file_name, output_file_name):
             "processed_cards": processed_cards,
             "failed_cards": failed_cards,
             "total_tokens": max(token_metadata.values()),
+            "tokens_generated": token_count,  
         }, f)
 
 if __name__ == "__main__":

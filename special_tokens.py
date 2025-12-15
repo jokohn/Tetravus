@@ -13,3 +13,6 @@ subtype_break_token = "<subtype_break>"
 
 begin_card_token = "<card>"
 end_card_token = "</card>"
+
+begin_oracle_text_mana_cost_token = "<oracle_text_mana_cost>"
+end_oracle_text_mana_cost_token = "</oracle_text_mana_cost>"

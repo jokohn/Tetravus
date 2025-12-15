@@ -2,7 +2,7 @@ from re import sub
 from string import ascii_lowercase, digits
 
 punctuation_characters = '.,\n'
-oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'' + punctuation_characters)
+oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'\{\}' + punctuation_characters)
 
 
 class UnsupportedCharacterError(Exception):
@@ -32,6 +32,3 @@ def preprocess_oracle_text(oracle_text):
             raise UnsupportedCharacterError(char)
 
     return oracle_text
-
-def capitalize_first_word_of_each_sentence(oracle_text):
-    return sub(r'([.!?\n])( ?)([a-z])', r'\1\2\3.upper()', oracle_text)

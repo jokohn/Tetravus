@@ -1,7 +1,8 @@
 from re import sub
 
 from .oracle_text_helper_functions.preprocess_oracle_text import preprocess_oracle_text
-from special_tokens import begin_oracle_text_token, end_oracle_text_token
+from .tokenize_mana_cost import tokenize_mana_cost, detokenize_mana_cost
+from special_tokens import begin_oracle_text_token, end_oracle_text_token, begin_oracle_text_mana_cost_token, end_oracle_text_mana_cost_token
 
 def tokenize_oracle_text(oracle_text):
     preprocessed_oracle_text = preprocess_oracle_text(oracle_text)
@@ -9,7 +10,10 @@ def tokenize_oracle_text(oracle_text):
     for word in preprocessed_oracle_text.split(' '):
         if word == '':
             continue
-        tokens.append(f'<oracle_text_{word}>')
+        elif word.startswith('{') and word.endswith('}'):
+            tokens.extend(tokenize_mana_cost(word, is_orcale_text_mana_cost=True))
+        else:
+            tokens.append(f'<oracle_text_{word}>')
     tokens.append(end_oracle_text_token)
     return tokens
 
@@ -21,12 +25,16 @@ def detokenize_oracle_text(token_stream):
     oracle_text = []
     current_token = token_stream.consume_token()
     while current_token != end_oracle_text_token:
-        oracle_text.append(current_token.replace('<oracle_text_', '').replace('>', ''))
+        if current_token == begin_oracle_text_mana_cost_token:
+            token_stream.jump_by(-1)
+            oracle_text.append(detokenize_mana_cost(token_stream, is_orcale_text_mana_cost=True))
+        else:
+            oracle_text.append(current_token.replace('<oracle_text_', '').replace('>', ''))
         current_token = token_stream.consume_token()
     oracle_text = ' '.join(oracle_text)
 
     # Remove space between words and following punctuation characters
-    oracle_text = sub(r'([a-zA-Z]) ([.,])', r'\1\2', oracle_text)
+    oracle_text = sub(r'([a-zA-Z\}]) ([.,])', r'\1\2', oracle_text)
 
     # remove spaces around newlines
     oracle_text = sub(r' +\n +', '\n', oracle_text)
@@ -36,5 +44,4 @@ def detokenize_oracle_text(token_stream):
         r'(\n|\.|^)( ?)([a-z])',
         lambda match: f'{match.group(1)}{match.group(2)}{match.group(3).upper()}',
         oracle_text)
-
     return oracle_text

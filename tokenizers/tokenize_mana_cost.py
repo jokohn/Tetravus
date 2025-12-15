@@ -1,8 +1,7 @@
-
-from special_tokens import begin_mana_cost_token, end_mana_cost_token
+from special_tokens import begin_mana_cost_token, end_mana_cost_token, begin_oracle_text_mana_cost_token, end_oracle_text_mana_cost_token
 import re
 
-def tokenize_mana_cost(mana_cost_string):
+def tokenize_mana_cost(mana_cost_string, is_orcale_text_mana_cost=False):
     """
     Tokenize a mana cost string in format '{char}+' (e.g., '{R}{G}{W}' or '{1}{2}{3}').
     
@@ -13,7 +12,10 @@ def tokenize_mana_cost(mana_cost_string):
         List of tokens starting with begin_mana_cost_token, containing <mana_cost_{char}> 
         tokens for each character, and ending with end_mana_cost_token.
     """
-    tokens = [begin_mana_cost_token]
+    if is_orcale_text_mana_cost:
+        tokens = [begin_oracle_text_mana_cost_token]
+    else:
+        tokens = [begin_mana_cost_token]
     
     # Extract characters from between braces using regex
     # Pattern matches {char} and captures the character
@@ -21,12 +23,15 @@ def tokenize_mana_cost(mana_cost_string):
     matches = re.findall(pattern, mana_cost_string)
     
     for char in matches:
-        tokens.append(f'<mana_cost_{char}>')
+        tokens.append(f'<{"oracle_text_" if is_orcale_text_mana_cost else ""}mana_cost_{char}>')
     
-    tokens.append(end_mana_cost_token)
+    if is_orcale_text_mana_cost:
+        tokens.append(end_oracle_text_mana_cost_token)
+    else:
+        tokens.append(end_mana_cost_token)
     return tokens
 
-def detokenize_mana_cost(token_stream):
+def detokenize_mana_cost(token_stream, is_orcale_text_mana_cost=False):
     """
     Detokenize a token stream back into a mana cost string.
     
@@ -37,16 +42,19 @@ def detokenize_mana_cost(token_stream):
         String in format '{char}+' (e.g., '{R}{G}{W}')
     """
     start_token = token_stream.peek()
-    if start_token != begin_mana_cost_token:
-        raise ValueError(f"Expected begin_mana_cost_token, got {start_token}")
-    
+    if is_orcale_text_mana_cost:
+        if start_token != begin_oracle_text_mana_cost_token:
+            raise ValueError(f"Expected begin_oracle_text_mana_cost_token, got {start_token}")
+    else:
+        if start_token != begin_mana_cost_token:
+            raise ValueError(f"Expected begin_mana_cost_token, got {start_token}")
     token_stream.advance()
     mana_cost_chars = []
     
     current_token = token_stream.consume_token()
-    while current_token != end_mana_cost_token:
+    while current_token != (end_mana_cost_token if not is_orcale_text_mana_cost else end_oracle_text_mana_cost_token):
         # Extract character from token like <mana_cost_R>
-        char = current_token.replace('<mana_cost_', '').replace('>', '')
+        char = current_token.replace('<mana_cost_', '').replace('>', '').replace('<oracle_text_mana_cost_', '')
         mana_cost_chars.append(f'{char}')
         current_token = token_stream.consume_token()
     
