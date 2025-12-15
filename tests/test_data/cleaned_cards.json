@@ -1,0 +1,7 @@
+[
+    {"name": "Ancestral Recall", "oracle_text": "Target player draws three cards.", "mana_cost": "{U}", "type_line": "Instant", "release_year": "1993", "rarity": "rare", "set": "lea", "released_at": "1993-08-05"},
+    {"name": "Grizzly Bears", "oracle_text": "", "mana_cost": "{1}{G}", "type_line": "Creature \u2014 Bear", "release_year": "1993", "rarity": "common", "set": "lea", "power": "2", "toughness": "2", "released_at": "1993-08-05"},
+    {"name": "Phantasmal Bear", "oracle_text": "When this creature becomes the target of a spell or ability, sacrifice it.", "mana_cost": "{U}", "type_line": "Creature \u2014 Bear Illusion", "release_year": "2011", "rarity": "common", "set": "m12", "power": "2", "toughness": "2", "released_at": "2011-07-15"},
+    {"name": "Aang, Air Nomad", "oracle_text": "Flying (This creature can't be blocked except by creatures with flying or reach.)\nVigilance (Attacking doesn't cause this creature to tap.)\nOther creatures you control have vigilance.", "mana_cost": "{3}{W}{W}", "type_line": "Legendary Creature \u2014 Human Avatar Ally", "release_year": "2025", "rarity": "rare", "set": "pmei", "power": "5", "toughness": "4", "released_at": "2025-11-21"},
+    {"name": "Unprecessable Card", "oracle_text": "Target creature gets +2/+2 until end of turn.", "mana_cost": "{W}", "type_line": "Instant", "release_year": "1993", "rarity": "common", "set": "lea", "released_at": "1993-01-01"}
+]

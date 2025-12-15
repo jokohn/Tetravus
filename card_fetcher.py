@@ -43,7 +43,7 @@ def card_cleaner(raw_cards_file_name):
             if old_card['release_date'] > card['release_date']:
                 cards_by_name[card['name']] = card
         else:
-            cards_by_name[card['name']] = card  
+            cards_by_name[card['name']] = card
         card_count += 1
         if card_count % 250 == 0:
             print(f"Processed {card_count} cards")
@@ -54,5 +54,5 @@ def clean_cards(raw_cards_file_name):
     cleaned_cards = card_cleaner(raw_cards_file_name)
     for card in cleaned_cards:
         del card['release_date']
-    with open(f"{raw_cards_file_name[:-17]}_cleaned.json", "w") as f:
+    with open(f"{raw_cards_file_name.split('_')[0]}_{raw_cards_file_name.split('_')[1]}_cleaned.json", "w") as f:
         json.dump(cleaned_cards, f)

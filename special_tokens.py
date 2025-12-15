@@ -10,3 +10,6 @@ end_mana_cost_token = "</mana_cost>"
 begin_type_line_token = "<type_line>"
 end_type_line_token = "</type_line>"
 subtype_break_token = "<subtype_break>"
+
+begin_card_token = "<card>"
+end_card_token = "</card>"

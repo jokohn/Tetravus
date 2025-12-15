@@ -50,26 +50,30 @@ class Card:
         return card_json
 
     def generate_tokens(self, fields):
-        tokens = ''
+        tokens = []
         for field in fields:
             if field == 'name':
-                tokens += ''.join(tokenize_name(self.name))
+                tokens.extend(tokenize_name(self.name))
             elif field == 'oracle_text':
-                tokens += ''.join(tokenize_oracle_text(self.oracle_text))
+                tokens.extend(tokenize_oracle_text(self.oracle_text))
             elif field == 'mana_cost':
-                tokens += ''.join(tokenize_mana_cost(self.mana_cost))
+                tokens.extend(tokenize_mana_cost(self.mana_cost))
             elif field == 'type_line':
-                tokens += ''.join(tokenize_type_line(self.type_line))
+                tokens.extend(tokenize_type_line(self.type_line))
             elif field == 'release_year':
-                tokens += ''.join(tokenize_release_year(self.release_year))
+                tokens.extend(tokenize_release_year(self.release_year))
             elif field == 'rarity':
-                tokens += ''.join(tokenize_rarity(self.rarity))
+                tokens.extend(tokenize_rarity(self.rarity))
             elif field == 'set':
-                tokens += ''.join(tokenize_set_name(self.set_code))
+                tokens.extend(tokenize_set_name(self.set_code))
             elif field == 'power':
-                tokens += ''.join(tokenize_power(self.power))
+                if self.power is None:
+                    continue
+                tokens.extend(tokenize_power(self.power))
             elif field == 'toughness':
-                tokens += ''.join(tokenize_toughness(self.toughness))
+                if self.toughness is None:
+                    continue
+                tokens.extend(tokenize_toughness(self.toughness))
             else:
                 raise ValueError(f"Invalid field: {field}")
         return tokens

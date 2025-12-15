@@ -21,7 +21,7 @@ class TestTokenizeCard(unittest.TestCase):
         card = Card.from_json(None, data)
         tokens = card.generate_tokens(["name", "oracle_text", "mana_cost", "type_line", "release_year", "rarity", "set", "power", "toughness"])
         self.assertEqual(
-            tokens,
+            ''.join(tokens),
                 begin_name_token +
                     '<name_char_G><name_char_r><name_char_i><name_char_z><name_char_z><name_char_l><name_char_y>' +
                     '<name_char_ >' +
@@ -51,7 +51,7 @@ class TestTokenizeCard(unittest.TestCase):
         card = Card.from_json(None, data)
         tokens = card.generate_tokens(["name", "mana_cost", "oracle_text", "release_year", "rarity", "set", "power", "toughness", "type_line"])
         self.assertEqual(
-            tokens,
+            ''.join(tokens),
             ''.join(tokenize_name(card.name)) +
             ''.join(tokenize_mana_cost(card.mana_cost)) +
             ''.join(tokenize_oracle_text(card.oracle_text)) +
