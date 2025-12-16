@@ -5,18 +5,20 @@ import time
 
 from card import Card
 
-def fetch_cards():
+def fetch_cards_and_save(output_file_name=None):
     bulk_data_response = requests.get("https://api.scryfall.com/bulk-data")
     bulk_data = bulk_data_response.json()
     for item in bulk_data['data']:
         if item["type"] == "all_cards":
             oracle_cards_url = item["download_uri"]
             current_time = time.strftime("%Y%m%d_%H%M%S")
-            with open(f"{current_time}_raw_cards_file.json", "wb") as f:
+            if output_file_name is None:
+                output_file_name = f"{current_time}_raw_cards_file.json"
+            with open(output_file_name, "wb") as f:
                 print(f"Downloading cards from {oracle_cards_url}")
                 oracle_cards_response = requests.get(oracle_cards_url)
                 print(f"Downloaded {oracle_cards_response.status_code} cards")
-                print(f"Writing to file {current_time}_raw_cards_file.json")
+                print(f"Writing to file {output_file_name}")
                 chunk_count = 0
                 for chunk in oracle_cards_response.iter_content(chunk_size=8192):
                     if chunk:
@@ -33,11 +35,14 @@ def card_cleaner(raw_cards_file_name):
     for card_dict in ijson.items(f, 'item'):
         if card_dict['lang'] != 'en':
             continue
-        if card_dict['legalities']['vintage'] == 'not_legal':
+        elif card_dict['legalities']['vintage'] == 'not_legal':
             continue
-        if card_dict.get('card_faces'):
+        elif card_dict['legalities']['vintage'] == 'banned':
+            continue
+        elif card_dict.get('card_faces'):
             continue
         card = Card.from_json(None, card_dict).to_json()
+        card['released_at'] = card_dict['released_at']
         card['release_date'] = time.strptime(card_dict['released_at'], '%Y-%m-%d')
         if old_card := cards_by_name.get(card['name']):
             if old_card['release_date'] > card['release_date']:

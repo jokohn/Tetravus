@@ -24,3 +24,9 @@ oracle_text_close_quote_token = "<oracle_text_close_quote>"
 
 begin_planeswalker_loyalty_ability_cost_token = "<planeswalker_loyalty_ability_cost>"
 end_planeswalker_loyalty_ability_cost_token = "</planeswalker_loyalty_ability_cost>"
+
+begin_stats_definition_token = "<stats_definition>"
+end_stats_definition_token = "</stats_definition>"
+
+begin_stats_change_token = "<stats_change>"
+end_stats_change_token = "</stats_change>"

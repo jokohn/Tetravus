@@ -1,4 +1,5 @@
-from special_tokens import begin_planeswalker_loyalty_ability_cost_token, end_planeswalker_loyalty_ability_cost_token
+from special_tokens import begin_planeswalker_loyalty_ability_cost_token, end_planeswalker_loyalty_ability_cost_token, \
+    begin_stats_definition_token, end_stats_definition_token, begin_stats_change_token, end_stats_change_token
 
 def tokenize_planeswalker_loyalty_ability(token_string):
     if token_string.startswith('0'):
@@ -32,3 +33,75 @@ def detokenize_planeswalker_loyalty_ability(token_stream):
     if current_token != end_planeswalker_loyalty_ability_cost_token:
         raise ValueError(f"Expected end_planeswalker_loyalty_ability_cost_token, got {current_token}")
     return f'{sign}{value}:'    
+
+def tokenize_stats_definition_string(token_string):
+    power_change, toughness_change = token_string.split('/')
+    tokens = [begin_stats_definition_token]
+    tokens.append(f'<stats_definition_power_{power_change}>')
+    tokens.append(f'<stats_definition_toughness_{toughness_change}>')
+    tokens.append(end_stats_definition_token)
+    return tokens
+
+def detokenize_stats_definition_string(token_stream):
+    start_token = token_stream.peek()
+    if start_token != begin_stats_definition_token:
+        raise ValueError(f"Expected begin_stats_definition_token, got {start_token}")
+    token_stream.advance()
+    current_token = token_stream.consume_token()
+    if not current_token.startswith('<stats_definition_power_'):
+        raise ValueError(f"Expected <stats_definition_power_>, got {current_token}")
+    power = current_token.replace('<stats_definition_power_', '').replace('>', '')
+    current_token = token_stream.consume_token()
+    if not current_token.startswith('<stats_definition_toughness_'):
+        raise ValueError(f"Expected <stats_definition_toughness_>, got {current_token}")
+    toughness = current_token.replace('<stats_definition_toughness_', '').replace('>', '')
+    current_token = token_stream.consume_token()
+    if current_token != end_stats_definition_token:
+        raise ValueError(f"Expected end_stats_definition_token, got {current_token}")
+    return f'{power}/{toughness}'
+
+def tokenize_stats_change_string(token_string):
+    power_change, toughness_change = token_string.split('/')
+    tokens = [begin_stats_change_token]
+    if power_change.startswith('+'):
+        tokens.append('<stats_change_power_sign_+>')
+    elif power_change.startswith('-'):
+        tokens.append('<stats_change_power_sign_->')
+    else:
+        raise ValueError(f"Expected string to start with + or -, got {power_change}")
+    tokens.append(f'<stats_change_power_value_{power_change[1:]}>')
+    if toughness_change.startswith('+'):
+        tokens.append('<stats_change_toughness_sign_+>')
+    elif toughness_change.startswith('-'):
+        tokens.append('<stats_change_toughness_sign_->')
+    else:
+        raise ValueError(f"Expected string to start with + or -, got {toughness_change}")
+    tokens.append(f'<stats_change_toughness_value_{toughness_change[1:]}>')
+    tokens.append(end_stats_change_token)
+    return tokens
+
+def detokenize_stats_change_string(token_stream):
+    start_token = token_stream.peek()
+    if start_token != begin_stats_change_token:
+        raise ValueError(f"Expected begin_stats_change_token, got {start_token}")
+    token_stream.advance()
+    current_token = token_stream.consume_token()
+    if not current_token.startswith('<stats_change_power_sign_'):
+        raise ValueError(f"Expected <stats_change_power_sign_>, got {current_token}")
+    power_sign = current_token.replace('<stats_change_power_sign_', '').replace('>', '')
+    current_token = token_stream.consume_token()
+    if not current_token.startswith('<stats_change_power_value_'):
+        raise ValueError(f"Expected <stats_change_power_value_>, got {current_token}")
+    power_value = current_token.replace('<stats_change_power_value_', '').replace('>', '')
+    current_token = token_stream.consume_token()
+    if not current_token.startswith('<stats_change_toughness_sign_'):
+        raise ValueError(f"Expected <stats_change_toughness_sign_>, got {current_token}")
+    toughness_sign = current_token.replace('<stats_change_toughness_sign_', '').replace('>', '')
+    current_token = token_stream.consume_token()
+    if not current_token.startswith('<stats_change_toughness_value_'):
+        raise ValueError(f"Expected <stats_change_toughness_value_>, got {current_token}")
+    toughness_value = current_token.replace('<stats_change_toughness_value_', '').replace('>', '')
+    current_token = token_stream.consume_token()
+    if current_token != end_stats_change_token:
+        raise ValueError(f"Expected end_stats_change_token, got {current_token}")
+    return f'{power_sign}{power_value}/{toughness_sign}{toughness_value}'

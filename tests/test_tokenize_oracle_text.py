@@ -9,7 +9,8 @@ from token_stream import TokenStream
 from tokenizers.oracle_text_helper_functions.preprocess_oracle_text import UnsupportedCharacterError
 from special_tokens import begin_oracle_text_token, end_oracle_text_token, begin_oracle_text_mana_cost_token, \
     end_oracle_text_mana_cost_token, oracle_text_this_card_token, oracle_text_open_quote_token, \
-        oracle_text_close_quote_token
+        oracle_text_close_quote_token, begin_stats_definition_token, end_stats_definition_token, \
+        begin_stats_change_token, end_stats_change_token
 
 class TestTokenizeOracleText(unittest.TestCase):
     def test_tokenize_oracle_text_simple(self):
@@ -321,7 +322,59 @@ class TestTokenizeOracleText(unittest.TestCase):
         card = Card.from_json(None, data)
         tokens = card.generate_tokens(["oracle_text"])
         token_stream = TokenStream(tokens)
-        self.assertEqual(detokenize_oracle_text(token_stream), card.oracle_text.replace('Aura', 'aura'))        
+        self.assertEqual(detokenize_oracle_text(token_stream), card.oracle_text.replace('Aura', 'aura'))
+
+    def test_stat_definition_token(self):
+        token_string = 'Create a 1/1 Saporling token.'
+        tokens = tokenize_oracle_text(token_string)
+        self.assertEqual(tokens, [
+            begin_oracle_text_token,
+            '<oracle_text_create>',
+            '<oracle_text_a>',
+            begin_stats_definition_token,
+            '<stats_definition_power_1>',
+            '<stats_definition_toughness_1>',
+            end_stats_definition_token,
+            '<oracle_text_saporling>',
+            '<oracle_text_token>',
+            '<oracle_text_.>',
+            end_oracle_text_token
+        ])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_oracle_text(token_stream), token_string.replace('Saporling', 'saporling'))
+
+    def test_stat_change_token(self):
+        token_string = 'Target creature gets +2/+2 until end of turn.'
+        tokens = tokenize_oracle_text(token_string)
+        self.assertEqual(tokens, [
+            begin_oracle_text_token,
+            '<oracle_text_target>',
+            '<oracle_text_creature>',
+            '<oracle_text_gets>',
+            begin_stats_change_token,
+            '<stats_change_power_sign_+>',
+            '<stats_change_power_value_2>',
+            '<stats_change_toughness_sign_+>',
+            '<stats_change_toughness_value_2>',
+            end_stats_change_token,
+            '<oracle_text_until>',
+            '<oracle_text_end>',
+            '<oracle_text_of>',
+            '<oracle_text_turn>',
+            '<oracle_text_.>',
+            end_oracle_text_token
+        ])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_oracle_text(token_stream), token_string)
+
+    def test_giant_growth(self):
+        test_file = os.path.join(os.path.dirname(__file__), "test_data", "giant_growth.json")
+        with open(test_file, "r") as f:
+            data = json.load(f)
+        card = Card.from_json(None, data)
+        tokens = card.generate_tokens(["oracle_text"])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_oracle_text(token_stream), card.oracle_text)
 
     def test_unsupported_characters(self):
         oracle_text = "Ward—Pay 2 Life"
