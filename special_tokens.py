@@ -18,3 +18,6 @@ begin_oracle_text_mana_cost_token = "<oracle_text_mana_cost>"
 end_oracle_text_mana_cost_token = "</oracle_text_mana_cost>"
 
 oracle_text_this_card_token = "<oracle_text_this_card>"
+
+oracle_text_open_quote_token = "<oracle_text_open_quote>"
+oracle_text_close_quote_token = "<oracle_text_close_quote>"

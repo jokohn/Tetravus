@@ -8,7 +8,8 @@ from tokenizers.tokenize_oracle_text import tokenize_oracle_text, detokenize_ora
 from token_stream import TokenStream
 from tokenizers.oracle_text_helper_functions.preprocess_oracle_text import UnsupportedCharacterError
 from special_tokens import begin_oracle_text_token, end_oracle_text_token, begin_oracle_text_mana_cost_token, \
-    end_oracle_text_mana_cost_token, oracle_text_this_card_token
+    end_oracle_text_mana_cost_token, oracle_text_this_card_token, oracle_text_open_quote_token, \
+        oracle_text_close_quote_token
 
 class TestTokenizeOracleText(unittest.TestCase):
     def test_tokenize_oracle_text_simple(self):
@@ -289,6 +290,38 @@ class TestTokenizeOracleText(unittest.TestCase):
             '<oracle_text_or>',
             '<oracle_text_attacks>',
         ])
+
+    def test_quoted_text(self):
+        oracle_text = 'Create an artifact token with "Creatures you control have trample."'
+        tokens = tokenize_oracle_text(oracle_text)
+        self.assertEqual(tokens, [
+            begin_oracle_text_token,
+            '<oracle_text_create>',
+            '<oracle_text_an>',
+            '<oracle_text_artifact>',
+            '<oracle_text_token>',
+            '<oracle_text_with>',
+            oracle_text_open_quote_token,
+            '<oracle_text_creatures>',
+            '<oracle_text_you>',
+            '<oracle_text_control>',
+            '<oracle_text_have>',
+            '<oracle_text_trample>',
+            '<oracle_text_.>',
+            oracle_text_close_quote_token,
+            end_oracle_text_token
+        ])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_oracle_text(token_stream), oracle_text)
+
+    def test_abundant_growth(self):
+        test_file = os.path.join(os.path.dirname(__file__), "test_data", "abundant_growth.json")
+        with open(test_file, "r") as f:
+            data = json.load(f)
+        card = Card.from_json(None, data)
+        tokens = card.generate_tokens(["oracle_text"])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_oracle_text(token_stream), card.oracle_text.replace('Aura', 'aura'))        
 
     def test_unsupported_characters(self):
         oracle_text = "Ward—Pay 2 Life"

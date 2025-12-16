@@ -1,7 +1,7 @@
 from re import sub
 from string import ascii_lowercase, digits
 
-from special_tokens import oracle_text_this_card_token
+from special_tokens import oracle_text_this_card_token, oracle_text_open_quote_token, oracle_text_close_quote_token
 
 punctuation_characters = '.,\n:'
 oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'{}<>_' + punctuation_characters)
@@ -34,6 +34,10 @@ def preprocess_oracle_text(oracle_text, card_name=None, type_line=None):
 
     # remove reminder text (text in between parentheses)
     oracle_text = sub(fr'\(.*\)', '', oracle_text)
+    
+    oracle_text = sub(r'\"(.)', oracle_text_open_quote_token + r' \1', oracle_text)
+    oracle_text = sub(r'(.)"', r'\1 ' + oracle_text_close_quote_token, oracle_text)
+    
 
     # add spacing before and after punctuation characters
     for punctuation_character in punctuation_characters:
