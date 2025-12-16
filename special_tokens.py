@@ -21,3 +21,6 @@ oracle_text_this_card_token = "<oracle_text_this_card>"
 
 oracle_text_open_quote_token = "<oracle_text_open_quote>"
 oracle_text_close_quote_token = "<oracle_text_close_quote>"
+
+begin_planeswalker_loyalty_ability_cost_token = "<planeswalker_loyalty_ability_cost>"
+end_planeswalker_loyalty_ability_cost_token = "</planeswalker_loyalty_ability_cost>"

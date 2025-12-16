@@ -21,6 +21,8 @@ def detokenize_set_name(token_stream):
     return set_name.replace('<set_', '').replace('>', '')
 
 def tokenize_power(power):
+    if not power:
+        return []
     return [f'<power_{power}>']
 
 def detokenize_power(token_stream):
@@ -28,8 +30,19 @@ def detokenize_power(token_stream):
     return power.replace('<power_', '').replace('>', '')
 
 def tokenize_toughness(toughness):
+    if not toughness:
+        return []
     return [f'<toughness_{toughness}>']
 
 def detokenize_toughness(token_stream):
     toughness = token_stream.consume_token()
     return toughness.replace('<toughness_', '').replace('>', '')
+
+def tokenize_loyalty(loyalty):
+    if not loyalty:
+        return []
+    return [f'<loyalty_{loyalty}>']
+
+def detokenize_loyalty(token_stream):
+    loyalty = token_stream.consume_token()
+    return loyalty.replace('<loyalty_', '').replace('>', '')

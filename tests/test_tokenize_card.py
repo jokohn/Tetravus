@@ -11,7 +11,7 @@ from tokenizers.tokenize_mana_cost import tokenize_mana_cost
 from tokenizers.tokenize_name import tokenize_name
 from tokenizers.tokenize_type_line import tokenize_type_line
 from tokenizers.tokenize_simple_card_fields import tokenize_power, tokenize_toughness, tokenize_release_year, \
-    tokenize_rarity, tokenize_set_name
+    tokenize_rarity, tokenize_set_name, tokenize_loyalty
 
 class TestTokenizeCard(unittest.TestCase):
     def test_tokenize_card(self):
@@ -61,6 +61,26 @@ class TestTokenizeCard(unittest.TestCase):
             ''.join(tokenize_power(card.power)) +
             ''.join(tokenize_toughness(card.toughness)) +
             ''.join(tokenize_type_line(card.type_line))
+        )
+
+    def test_tokenize_planeswalker(self):
+        test_file = os.path.join(os.path.dirname(__file__), "test_data", "ob_nixilis_hate_twisted.json")
+        with open(test_file, "r") as f:
+            data = json.load(f)
+        card = Card.from_json(None, data)
+        tokens = card.generate_tokens(["name", "mana_cost", "oracle_text", "release_year", "rarity", "set", "power", "toughness", "type_line", "loyalty"])
+        self.assertEqual(
+            ''.join(tokens),
+            ''.join(tokenize_name(card.name)) +
+            ''.join(tokenize_mana_cost(card.mana_cost)) +
+            ''.join(tokenize_oracle_text(card.oracle_text, card_name=card.name, type_line=card.type_line)) +
+            ''.join(tokenize_release_year(card.release_year)) +
+            ''.join(tokenize_rarity(card.rarity)) +
+            ''.join(tokenize_set_name(card.set_code)) +
+            ''.join(tokenize_power(card.power)) +
+            ''.join(tokenize_toughness(card.toughness)) +
+            ''.join(tokenize_type_line(card.type_line)) +
+            ''.join(tokenize_loyalty(card.loyalty))
         )
     
     def tokenize_nonexistent_field(self):

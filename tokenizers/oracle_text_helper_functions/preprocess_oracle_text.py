@@ -4,7 +4,7 @@ from string import ascii_lowercase, digits
 from special_tokens import oracle_text_this_card_token, oracle_text_open_quote_token, oracle_text_close_quote_token
 
 punctuation_characters = '.,\n:'
-oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'{}<>_' + punctuation_characters)
+oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'{}<>_+−' + punctuation_characters)
 
 
 class UnsupportedCharacterError(Exception):

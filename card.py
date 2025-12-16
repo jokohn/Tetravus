@@ -1,12 +1,12 @@
 from tokenizers.tokenize_oracle_text import tokenize_oracle_text
 from tokenizers.tokenize_mana_cost import tokenize_mana_cost
 from tokenizers.tokenize_simple_card_fields import tokenize_power, tokenize_toughness, tokenize_release_year, \
-    tokenize_rarity, tokenize_set_name
+    tokenize_rarity, tokenize_set_name, tokenize_loyalty
 from tokenizers.tokenize_name import tokenize_name
 from tokenizers.tokenize_type_line import tokenize_type_line
 
 class Card:
-    def __init__(self, name, oracle_text, mana_cost, type_line, release_year, rarity, set_name, power=None, toughness=None):
+    def __init__(self, name, oracle_text, mana_cost, type_line, release_year, rarity, set_name, power=None, toughness=None, loyalty=None):
         self.name = name
         self.oracle_text = oracle_text
         self.mana_cost = mana_cost
@@ -16,7 +16,7 @@ class Card:
         self.set_code = set_name
         self.power = power
         self.toughness = toughness
-
+        self.loyalty = loyalty
     def from_json(self, json_data):
         try:
             return Card(
@@ -28,7 +28,8 @@ class Card:
                 json_data["rarity"],
                 json_data["set"],
                 json_data.get("power", None),
-                json_data.get("toughness", None)
+                json_data.get("toughness", None),
+                json_data.get("loyalty", None)
             )
         except KeyError as e:
             print(json_data)
@@ -47,6 +48,8 @@ class Card:
             card_json["power"] = self.power
         if self.toughness:
             card_json["toughness"] = self.toughness
+        if self.loyalty:
+            card_json["loyalty"] = self.loyalty
         return card_json
 
     def generate_tokens(self, fields):
@@ -74,6 +77,10 @@ class Card:
                 if self.toughness is None:
                     continue
                 tokens.extend(tokenize_toughness(self.toughness))
+            elif field == 'loyalty':
+                if self.loyalty is None:
+                    continue
+                tokens.extend(tokenize_loyalty(self.loyalty))
             else:
                 raise ValueError(f"Invalid field: {field}")
         return tokens
