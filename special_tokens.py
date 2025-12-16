@@ -16,3 +16,5 @@ end_card_token = "</card>"
 
 begin_oracle_text_mana_cost_token = "<oracle_text_mana_cost>"
 end_oracle_text_mana_cost_token = "</oracle_text_mana_cost>"
+
+oracle_text_this_card_token = "<oracle_text_this_card>"

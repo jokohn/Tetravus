@@ -1,8 +1,10 @@
 from re import sub
 from string import ascii_lowercase, digits
 
-punctuation_characters = '.,\n'
-oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'\{\}' + punctuation_characters)
+from special_tokens import oracle_text_this_card_token
+
+punctuation_characters = '.,\n:'
+oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'{}<>_' + punctuation_characters)
 
 
 class UnsupportedCharacterError(Exception):
@@ -10,7 +12,23 @@ class UnsupportedCharacterError(Exception):
         self.char = char
         super().__init__(f"Unsupported character: {char}")
 
-def preprocess_oracle_text(oracle_text):
+def preprocess_oracle_text(oracle_text, card_name=None, type_line=None):
+    if card_name is not None:
+        oracle_text = oracle_text.replace(card_name, oracle_text_this_card_token)
+        
+        if type_line is not None and 'Legendary' in type_line:
+            try:
+                first_name = card_name.split(',')[0]
+                oracle_text = oracle_text.replace(first_name, oracle_text_this_card_token)
+            except IndexError:
+                pass
+
+            try:
+                first_name = card_name.split(' of')[0]
+                oracle_text = oracle_text.replace(first_name, oracle_text_this_card_token)
+            except IndexError:
+                pass
+
     # Lowercase the text
     oracle_text = oracle_text.lower()
 

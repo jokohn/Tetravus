@@ -40,7 +40,7 @@ def tokenize_card_file_and_save(cleaned_cards_file_name, output_file_name):
             "token_metadata": token_metadata,
             "processed_cards": processed_cards,
             "failed_cards": failed_cards,
-            "total_tokens": max(token_metadata.values()),
+            "total_tokens": max(token_map.values()),
             "tokens_generated": token_count,  
         }, f)
 

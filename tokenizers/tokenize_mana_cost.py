@@ -55,7 +55,7 @@ def detokenize_mana_cost(token_stream, is_orcale_text_mana_cost=False):
     while current_token != (end_mana_cost_token if not is_orcale_text_mana_cost else end_oracle_text_mana_cost_token):
         # Extract character from token like <mana_cost_R>
         char = current_token.replace('<mana_cost_', '').replace('>', '').replace('<oracle_text_mana_cost_', '')
-        mana_cost_chars.append(f'{char}')
+        mana_cost_chars.append(f'{char.upper()}')
         current_token = token_stream.consume_token()
     
     # Reconstruct string in format {char}+

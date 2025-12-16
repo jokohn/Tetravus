@@ -55,7 +55,7 @@ class Card:
             if field == 'name':
                 tokens.extend(tokenize_name(self.name))
             elif field == 'oracle_text':
-                tokens.extend(tokenize_oracle_text(self.oracle_text))
+                tokens.extend(tokenize_oracle_text(self.oracle_text, self.name, self.type_line))
             elif field == 'mana_cost':
                 tokens.extend(tokenize_mana_cost(self.mana_cost))
             elif field == 'type_line':
