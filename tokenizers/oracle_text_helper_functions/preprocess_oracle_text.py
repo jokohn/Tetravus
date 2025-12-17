@@ -1,7 +1,8 @@
 from re import sub
 from string import ascii_lowercase, digits
 
-from special_tokens import oracle_text_this_card_token, oracle_text_open_quote_token, oracle_text_close_quote_token
+from special_tokens import oracle_text_this_card_token, oracle_text_open_quote_token, oracle_text_close_quote_token, \
+    oracle_text_other_card_token
 
 punctuation_characters = '.,\n:'
 oracle_text_character_whitelist = set(ascii_lowercase + digits + ' "\'{}<>_+−\/' + punctuation_characters)
@@ -12,22 +13,22 @@ class UnsupportedCharacterError(Exception):
         self.char = char
         super().__init__(f"Unsupported character: {char}")
 
-def preprocess_oracle_text(oracle_text, card_name=None, type_line=None):
+def preprocess_oracle_text(oracle_text, card_name=None, type_line=None, related_card_names=None):
     if card_name is not None:
         oracle_text = oracle_text.replace(card_name, oracle_text_this_card_token)
+
+        if related_card_names is not None:
+            for related_card_name in related_card_names:
+                oracle_text = oracle_text.replace(related_card_name, oracle_text_other_card_token)
         
         if type_line is not None and 'Legendary' in type_line:
-            try:
-                first_name = card_name.split(',')[0]
-                oracle_text = oracle_text.replace(first_name, oracle_text_this_card_token)
-            except IndexError:
-                pass
-
-            try:
-                first_name = card_name.split(' of')[0]
-                oracle_text = oracle_text.replace(first_name, oracle_text_this_card_token)
-            except IndexError:
-                pass
+            for split_term in [',', ' of' , ' the']:
+                try:
+                    first_name = card_name.split(split_term)[0]
+                    if first_name:
+                        oracle_text = oracle_text.replace(first_name, oracle_text_this_card_token)
+                except IndexError:
+                    pass
 
     # Lowercase the text
     oracle_text = oracle_text.lower()
@@ -35,8 +36,8 @@ def preprocess_oracle_text(oracle_text, card_name=None, type_line=None):
     # remove reminder text (text in between parentheses)
     oracle_text = sub(fr'\(.*\)', '', oracle_text)
     
-    oracle_text = sub(r'\"(.)', oracle_text_open_quote_token + r' \1', oracle_text)
-    oracle_text = sub(r'(.)"', r'\1 ' + oracle_text_close_quote_token, oracle_text)
+    oracle_text = sub(r'\"([^ ])', oracle_text_open_quote_token + r' \1', oracle_text)
+    oracle_text = sub(r'([^ ])\"', r'\1 ' + oracle_text_close_quote_token, oracle_text)
     
 
     # add spacing before and after punctuation characters

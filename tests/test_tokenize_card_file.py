@@ -12,4 +12,4 @@ class TestTokenizeCardFile(unittest.TestCase):
         self.assertEqual(5, token_metadata[begin_name_token])
         self.assertEqual(5, processed_cards)
         self.assertEqual(1, failed_cards)
-        self.assertEqual(209, token_count)
+        self.assertEqual(212, token_count)

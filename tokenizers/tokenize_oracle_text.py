@@ -7,13 +7,14 @@ from .oracle_text_helper_functions.oracle_text_type_identifiers import is_stat_c
 from .tokenize_mana_cost import tokenize_mana_cost, detokenize_mana_cost
 from special_tokens import begin_oracle_text_token, end_oracle_text_token, begin_oracle_text_mana_cost_token, \
     begin_stats_definition_token, oracle_text_this_card_token, oracle_text_open_quote_token, \
-        oracle_text_close_quote_token, begin_planeswalker_loyalty_ability_cost_token, begin_stats_change_token
+        oracle_text_close_quote_token, begin_planeswalker_loyalty_ability_cost_token, begin_stats_change_token, \
+        oracle_text_other_card_token
 from .oracle_text_helper_functions.tokenize_special_oracle_text_fields import tokenize_planeswalker_loyalty_ability, \
     detokenize_planeswalker_loyalty_ability, tokenize_stats_definition_string, detokenize_stats_definition_string, \
     detokenize_stats_change_string, tokenize_stats_change_string
 
-def tokenize_oracle_text(oracle_text, card_name=None, type_line=None):
-    preprocessed_oracle_text = preprocess_oracle_text(oracle_text, card_name, type_line)
+def tokenize_oracle_text(oracle_text, card_name=None, type_line=None, related_card_names=None):
+    preprocessed_oracle_text = preprocess_oracle_text(oracle_text, card_name, type_line, related_card_names)
     tokens = [begin_oracle_text_token]
     for word in preprocessed_oracle_text.split(' '):
         if word == '':
@@ -54,6 +55,8 @@ def detokenize_oracle_text(token_stream, card_name=None):
             oracle_text.append(detokenize_stats_change_string(token_stream))
         elif current_token == oracle_text_this_card_token:
             oracle_text.append(card_name)
+        elif current_token == oracle_text_other_card_token:
+            oracle_text.append('ANOTHER_CARD_NAME')
         elif current_token == oracle_text_open_quote_token:
             oracle_text.append(current_token)
         elif current_token == oracle_text_close_quote_token:
@@ -77,7 +80,14 @@ def detokenize_oracle_text(token_stream, card_name=None):
 
     # capitalize the first letter after a newline or period or start of the string
     oracle_text = sub(
-        r'(\n|\.|^|:|\{|")( ?)([a-z])',
+        r'(\n|\.|^|:|\{)( ?)([a-z])',
         lambda match: f'{match.group(1)}{match.group(2)}{match.group(3).upper()}',
         oracle_text)
+
+    # capitalize the first word after an open quote
+    oracle_text = sub(
+        r'(\")([a-z])',
+        lambda match: f'{match.group(1)}{match.group(2).upper()}',
+        oracle_text)
+
     return oracle_text

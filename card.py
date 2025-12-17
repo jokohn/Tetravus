@@ -6,7 +6,7 @@ from tokenizers.tokenize_name import tokenize_name
 from tokenizers.tokenize_type_line import tokenize_type_line
 
 class Card:
-    def __init__(self, name, oracle_text, mana_cost, type_line, release_year, rarity, set_name, power=None, toughness=None, loyalty=None):
+    def __init__(self, name, oracle_text, mana_cost, type_line, release_year, rarity, set_name, power=None, toughness=None, loyalty=None, all_parts=None, related_card_names=None):
         self.name = name
         self.oracle_text = oracle_text
         self.mana_cost = mana_cost
@@ -17,6 +17,14 @@ class Card:
         self.power = power
         self.toughness = toughness
         self.loyalty = loyalty
+        self.related_card_names = []
+        if related_card_names is not None:
+            self.related_card_names = related_card_names
+        else:
+            if all_parts is not None:
+                for part in all_parts:
+                    if not ('Legendary' not in part['type_line'] and part['component'] == 'token'):
+                        self.related_card_names.append(part["name"])
     def from_json(self, json_data):
         try:
             return Card(
@@ -29,7 +37,9 @@ class Card:
                 json_data["set"],
                 json_data.get("power", None),
                 json_data.get("toughness", None),
-                json_data.get("loyalty", None)
+                json_data.get("loyalty", None),
+                json_data.get("all_parts", None),
+                json_data.get("related_card_names", None)
             )
         except KeyError as e:
             print(json_data)
@@ -43,6 +53,7 @@ class Card:
             "release_year": self.release_year,
             "rarity": self.rarity,
             "set": self.set_code,
+            "related_card_names": self.related_card_names,
         }
         if self.power:
             card_json["power"] = self.power
@@ -58,7 +69,7 @@ class Card:
             if field == 'name':
                 tokens.extend(tokenize_name(self.name))
             elif field == 'oracle_text':
-                tokens.extend(tokenize_oracle_text(self.oracle_text, self.name, self.type_line))
+                tokens.extend(tokenize_oracle_text(self.oracle_text, self.name, self.type_line, self.related_card_names))
             elif field == 'mana_cost':
                 tokens.extend(tokenize_mana_cost(self.mana_cost))
             elif field == 'type_line':
