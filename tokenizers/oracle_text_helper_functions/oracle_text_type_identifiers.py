@@ -11,7 +11,7 @@ def is_stat_definition_token(token_string):
 def is_planeswalker_loyalty_ability_token(token_string, type_line):
     if 'Planeswalker' not in (type_line or ''):
         return False
-    return re.match(r'^(0|[\+-][1-9X]+)$', token_string) is not None
+    return re.match(r'^(0|[\+−][1-9X]+)$', token_string) is not None
 
 def is_planeswalker_loyaly_ability_colon_token(token_string, type_line):
     if 'Planeswalker' not in (type_line or ''):
