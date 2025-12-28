@@ -576,6 +576,6 @@ class TestTokenizeOracleText(unittest.TestCase):
         )
 
     def test_unsupported_characters(self):
-        oracle_text = "Ward—Pay 2 Life"
+        oracle_text = "Ward—Pay 2 Life|"
         with self.assertRaises(UnsupportedCharacterError):
             tokenize_oracle_text(oracle_text)
