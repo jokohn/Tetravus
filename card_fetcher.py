@@ -112,6 +112,8 @@ def card_cleaner(raw_cards_file_name):
             continue
         elif card_dict.get('promo'):
             continue
+        elif card_dict.get('reprint'):
+            continue
         card = Card.from_json(None, card_dict).to_json()
         card['released_at'] = card_dict['released_at']
         card['release_date'] = time.strptime(card_dict['released_at'], '%Y-%m-%d')
