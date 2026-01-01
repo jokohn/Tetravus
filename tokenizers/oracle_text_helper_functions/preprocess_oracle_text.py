@@ -78,6 +78,10 @@ def preprocess_oracle_text(oracle_text, card_name=None, type_line=None, related_
 
     # remove reminder text (text in between parentheses)
     oracle_text = sub(fr'\(.*\)', '', oracle_text)
+
+    # Semicolons are used to split keyword abilities where the final ability has reminder text.
+    # Since we don't support keyword abilities, we need to replace them with commas.
+    oracle_text = sub(';', ',', oracle_text)
     
     oracle_text = sub(r'\"([^ ])', oracle_text_open_quote_token + r' \1', oracle_text)
     oracle_text = sub(r'([^ ])\"', r'\1 ' + oracle_text_close_quote_token, oracle_text)
@@ -95,7 +99,6 @@ def preprocess_oracle_text(oracle_text, card_name=None, type_line=None, related_
     # Check for unsupported characters
     for char in oracle_text:
         if char not in oracle_text_character_whitelist:
-            print(f"Unsupported character: {char} in {card_name}")
             raise UnsupportedCharacterError(char)
 
     return oracle_text

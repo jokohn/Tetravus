@@ -575,6 +575,21 @@ class TestTokenizeOracleText(unittest.TestCase):
             card.oracle_text.lower().replace('sword of kaldra', 'another_card_name').replace('shield of kaldra', 'another_card_name')
         )
 
+    def test_semicolon_behavior(self):
+        oracle_text = 'Trample; haste; shroud'
+        tokens = tokenize_oracle_text(oracle_text)
+        self.assertEqual(tokens, [
+            begin_oracle_text_token,
+            '<oracle_text_trample>',
+            '<oracle_text_,>',
+            '<oracle_text_haste>',
+            '<oracle_text_,>',
+            '<oracle_text_shroud>',
+            end_oracle_text_token
+        ])
+        token_stream = TokenStream(tokens)
+        self.assertEqual(detokenize_oracle_text(token_stream), oracle_text.replace(';', ','))
+
     def test_unsupported_characters(self):
         oracle_text = "Ward—Pay 2 Life|"
         with self.assertRaises(UnsupportedCharacterError):
