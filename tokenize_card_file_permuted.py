@@ -9,6 +9,7 @@ import math
 
 from card import Card
 from tokenizers.oracle_text_helper_functions.preprocess_oracle_text import UnsupportedCharacterError
+from special_tokens import begin_card_token, end_card_token
 
 
 def get_available_fields(card):
@@ -93,10 +94,13 @@ def tokenize_card_file_permuted(cleaned_cards_file_name, num_permutations=10, se
     if seed is not None:
         random.seed(seed)
     
-    token_map = {}
+    token_map = {
+        begin_card_token: 0,
+        end_card_token: 1,
+    }
     train_token_blocks = []
     test_token_blocks = []
-    token_counter = 0
+    token_counter = 2
     processed_cards = 0
     failed_cards = 0
     train_cards = 0
@@ -121,13 +125,13 @@ def tokenize_card_file_permuted(cleaned_cards_file_name, num_permutations=10, se
                         tokens = card.generate_tokens(field_order)
                         
                         # Build token_map and convert tokens to IDs
-                        token_block = []
+                        token_block = [begin_card_token]
                         for token in tokens:
                             if token not in token_map:
                                 token_map[token] = token_counter
                                 token_counter += 1
                             token_block.append(token)
-                        
+                        token_block.append(end_card_token)
                         target_blocks.append(token_block)
                     except (ValueError, UnsupportedCharacterError) as e:
                         # Skip this permutation if it fails
@@ -209,12 +213,12 @@ def write_tokenized_output(train_blocks_encoded, test_blocks_encoded, token_map,
     # Write training token blocks to text file (one per line)
     with open(train_output_text_file, 'w') as f:
         for encoded_block in train_blocks_encoded:
-            f.write(encoded_block + '\n')
+            f.write(encoded_block)
     
     # Write test token blocks to text file (one per line)
     with open(test_output_text_file, 'w') as f:
         for encoded_block in test_blocks_encoded:
-            f.write(encoded_block + '\n')
+            f.write(encoded_block)
     
     # Write token map and metadata to JSON file
     output_data = {
