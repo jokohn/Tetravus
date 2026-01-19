@@ -38,7 +38,7 @@ class TestPlaneswalkerLoyaltyAbility(unittest.TestCase):
 
     def test_ob_nixilis_hate_twisted(self):
         test_file = os.path.join(os.path.dirname(__file__), "test_data", "ob_nixilis_hate_twisted.json")
-        with open(test_file, "r") as f:
+        with open(test_file, "r", encoding='utf-8') as f:
             data = json.load(f)
         card = Card.from_json(None, data)
         tokens = card.generate_tokens(["oracle_text"])

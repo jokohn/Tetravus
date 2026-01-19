@@ -16,7 +16,7 @@ from tokenizers.tokenize_simple_card_fields import tokenize_power, tokenize_toug
 class TestTokenizeCard(unittest.TestCase):
     def test_tokenize_card(self):
         test_file = os.path.join(os.path.dirname(__file__), "test_data", "grizzly_bear.json")
-        with open(test_file, "r") as f:
+        with open(test_file, "r", encoding='utf-8') as f:
             data = json.load(f)
         card = Card.from_json(None, data)
         tokens = card.generate_tokens(["name", "oracle_text", "mana_cost", "type_line", "release_year", "rarity", "set", "power", "toughness"])
@@ -65,7 +65,7 @@ class TestTokenizeCard(unittest.TestCase):
 
     def test_tokenize_planeswalker(self):
         test_file = os.path.join(os.path.dirname(__file__), "test_data", "ob_nixilis_hate_twisted.json")
-        with open(test_file, "r") as f:
+        with open(test_file, "r", encoding='utf-8') as f:
             data = json.load(f)
         card = Card.from_json(None, data)
         tokens = card.generate_tokens(["name", "mana_cost", "oracle_text", "release_year", "rarity", "set", "power", "toughness", "type_line", "loyalty"])

@@ -47,7 +47,7 @@ class TestEmDashCleaning(unittest.TestCase):
 
     def test_you_come_to_a_river(self):
         test_file = os.path.join(os.path.dirname(__file__), "test_data", "you_come_to_a_river.json")
-        with open(test_file, "r") as f:
+        with open(test_file, "r", encoding='utf-8') as f:
             data = json.load(f)
         card = Card.from_json(None, data)
         tokens = card.generate_tokens(["oracle_text"])

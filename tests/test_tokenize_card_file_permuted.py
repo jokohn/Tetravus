@@ -2,8 +2,6 @@ import unittest
 import json
 import os
 import tempfile
-import base64
-import struct
 import random
 
 from tokenize_card_file_permuted import (
@@ -160,7 +158,7 @@ class TestTokenizeCardFilePermuted(unittest.TestCase):
             "set": "test"
         }
         
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
             json.dump([card_dict], f)
             temp_file = f.name
         
@@ -180,13 +178,8 @@ class TestTokenizeCardFilePermuted(unittest.TestCase):
             
             # Verify encoding: decode and check we get back the same token IDs
             for _, encoded_block in enumerate(encoded_blocks):
-                # Decode base64
-                packed_bytes = base64.b64decode(encoded_block)
-                # Unpack token IDs
-                token_ids = []
-                for j in range(0, len(packed_bytes), 4):
-                    token_id = struct.unpack('>I', packed_bytes[j:j+4])[0]
-                    token_ids.append(token_id)
+                # Decode chr-encoded token IDs
+                token_ids = [ord(char) for char in encoded_block]
                 
                 # Convert back to token strings
                 reverse_map = {v: k for k, v in token_map.items()}
@@ -203,9 +196,7 @@ class TestTokenizeCardFilePermuted(unittest.TestCase):
             # We'll check that at least the first block is different from original first block
             # or that the order has changed
             first_original = tuple(token_blocks[0])
-            first_encoded_decoded = base64.b64decode(encoded_blocks[0])
-            first_decoded_ids = [struct.unpack('>I', first_encoded_decoded[j:j+4])[0] 
-                                for j in range(0, len(first_encoded_decoded), 4)]
+            first_decoded_ids = [ord(char) for char in encoded_blocks[0]]
             reverse_map = {v: k for k, v in token_map.items()}
             first_decoded_tokens = tuple([reverse_map[tid] for tid in first_decoded_ids])
             
@@ -264,9 +255,7 @@ class TestTokenizeCardFilePermuted(unittest.TestCase):
             
             # Verify that blocks are actually shuffled (not in original order)
             # Decode first encoded block and check it's not necessarily the first original block
-            first_encoded_decoded = base64.b64decode(encoded_blocks1[0])
-            first_decoded_ids = [struct.unpack('>I', first_encoded_decoded[j:j+4])[0] 
-                                for j in range(0, len(first_encoded_decoded), 4)]
+            first_decoded_ids = [ord(char) for char in encoded_blocks1[0]]
             reverse_map = {v: k for k, v in token_map1.items()}
             first_decoded_tokens = tuple([reverse_map[tid] for tid in first_decoded_ids])
             first_original_tokens = tuple(token_blocks1[0])
@@ -321,17 +310,14 @@ class TestTokenizeCardFilePermuted(unittest.TestCase):
             
             # Verify training text file exists and has correct format
             self.assertTrue(os.path.exists(train_file))
-            with open(train_file, 'r') as f:
-                lines = f.readlines()
-                self.assertEqual(len(lines), len(train_encoded))
-                # Each line should be base64 encoded
-                for line in lines:
-                    line = line.strip()
-                    # Should be valid base64
-                    try:
-                        base64.b64decode(line)
-                    except Exception as e:
-                        self.fail(f"Line is not valid base64: {e}")
+            with open(train_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                # File should contain all encoded blocks concatenated
+                # Each character should be a valid Unicode character (token ID)
+                self.assertGreater(len(content), 0)
+                # Verify we can decode token IDs from characters
+                token_ids = [ord(char) for char in content]
+                self.assertEqual(len(token_ids), sum(len(block) for block in train_encoded))
             
             # Verify test text file exists and has correct format
             self.assertTrue(os.path.exists(test_file))

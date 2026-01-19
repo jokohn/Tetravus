@@ -1,10 +1,8 @@
 import argparse
-import base64
 import ijson
 import itertools
 import json
 import random
-import struct
 import math
 
 from card import Card
@@ -42,36 +40,34 @@ def get_available_fields(card):
 
 def generate_field_permutations(fields, num_permutations):
     """
-    Generate N permutations of field orderings.
-    
-    When num_permutations <= total possible permutations, returns N unique permutations.
-    When num_permutations > total possible permutations, returns all unique permutations
-    plus randomly selected duplicates to reach the requested count.
-    
-    Args:
-        fields: List of field names
-        num_permutations: Number of permutations to generate
-        
-    Returns:
-        List of field order lists (each is a permutation of fields).
-        Uniqueness is guaranteed only when num_permutations <= factorial(len(fields)).
+    Generate N permutations of field orderings efficiently.
     """
-    # Calculate total number of possible permutations
     total_permutations = math.factorial(len(fields))
     
-    # If we need more permutations than possible, generate all and repeat
     if num_permutations > total_permutations:
+        # If we need more than possible, generate all once and sample
         all_permutations = list(itertools.permutations(fields))
-        # Repeat randomly to reach num_permutations
-        permutations = []
-        for _ in range(num_permutations):
-            permutations.append(list(random.choice(all_permutations)))
-        return permutations
+        return [list(random.choice(all_permutations)) for _ in range(num_permutations)]
     else:
-        # Generate N unique permutations
-        all_permutations = list(itertools.permutations(fields))
-        selected = random.sample(all_permutations, num_permutations)
-        return [list(p) for p in selected]
+        # For small num_permutations, generate random permutations directly
+        if num_permutations < total_permutations // 2:
+            # More efficient: generate random permutations directly
+            seen = set()
+            permutations = []
+            fields_list = list(fields)
+            while len(permutations) < num_permutations:
+                shuffled = fields_list.copy()
+                random.shuffle(shuffled)
+                perm_tuple = tuple(shuffled)
+                if perm_tuple not in seen:
+                    seen.add(perm_tuple)
+                    permutations.append(list(shuffled))
+            return permutations
+        else:
+            # If we need many permutations, materialize and sample
+            all_permutations = list(itertools.permutations(fields))
+            selected = random.sample(all_permutations, num_permutations)
+            return [list(p) for p in selected]
 
 
 def tokenize_card_file_permuted(cleaned_cards_file_name, num_permutations=10, seed=None, train_test_split=0.8):
@@ -166,14 +162,14 @@ def tokenize_card_file_permuted(cleaned_cards_file_name, num_permutations=10, se
 
 def shuffle_and_encode_token_blocks(token_blocks, token_map):
     """
-    Randomly shuffle token blocks and encode as base64.
+    Randomly shuffle token blocks and encode as chr-encoded strings.
     
     Args:
         token_blocks: List of token blocks (each is a list of token strings)
         token_map: Dict mapping token strings to numeric IDs
         
     Returns:
-        List of base64-encoded strings (one per token block)
+        List of chr-encoded strings (one per token block, each character is a token ID)
     """
     # Shuffle the blocks randomly
     shuffled_blocks = token_blocks.copy()
@@ -185,13 +181,12 @@ def shuffle_and_encode_token_blocks(token_blocks, token_map):
         # Convert token strings to numeric IDs
         token_ids = [token_map[token] for token in block]
         
-        # Pack token IDs as bytes (using 4-byte integers)
-        # This supports up to 2^32 unique tokens
-        packed_bytes = b''.join(struct.pack('>I', token_id) for token_id in token_ids)
+        # Convert token IDs to characters using chr()
+        # Each character's Unicode code point represents a token ID
+        # Supports token IDs up to 0x10FFFF (1,114,111 unique tokens)
+        char_string = ''.join(chr(token_id) for token_id in token_ids)
         
-        # Encode as base64
-        encoded = base64.b64encode(packed_bytes).decode('ascii')
-        encoded_blocks.append(encoded)
+        encoded_blocks.append(char_string)
     
     return encoded_blocks
 
@@ -199,24 +194,24 @@ def shuffle_and_encode_token_blocks(token_blocks, token_map):
 def write_tokenized_output(train_blocks_encoded, test_blocks_encoded, token_map, 
                           train_output_text_file, test_output_text_file, output_map_file, metadata):
     """
-    Write base64-encoded token blocks to text files and token map to JSON file.
+    Write chr-encoded token blocks to text files and token map to JSON file.
     
     Args:
-        train_blocks_encoded: List of base64-encoded token block strings for training
-        test_blocks_encoded: List of base64-encoded token block strings for test
+        train_blocks_encoded: List of chr-encoded token block strings for training
+        test_blocks_encoded: List of chr-encoded token block strings for test
         token_map: Dict mapping token strings to numeric IDs
-        train_output_text_file: Path for output training text file (one block per line)
-        test_output_text_file: Path for output test text file (one block per line)
+        train_output_text_file: Path for output training text file (blocks concatenated)
+        test_output_text_file: Path for output test text file (blocks concatenated)
         output_map_file: Path for output token map JSON file
         metadata: Dict with processing metadata
     """
     # Write training token blocks to text file (one per line)
-    with open(train_output_text_file, 'w') as f:
+    with open(train_output_text_file, 'w', encoding='utf-8') as f:
         for encoded_block in train_blocks_encoded:
             f.write(encoded_block)
     
     # Write test token blocks to text file (one per line)
-    with open(test_output_text_file, 'w') as f:
+    with open(test_output_text_file, 'w', encoding='utf-8') as f:
         for encoded_block in test_blocks_encoded:
             f.write(encoded_block)
     
@@ -240,11 +235,11 @@ def main():
     )
     parser.add_argument(
         "train_output_text_file",
-        help="Path to the output training text file (base64-encoded token blocks, one per line)"
+        help="Path to the output training text file (chr-encoded token blocks, UTF-8)"
     )
     parser.add_argument(
         "test_output_text_file",
-        help="Path to the output test text file (base64-encoded token blocks, one per line)"
+        help="Path to the output test text file (chr-encoded token blocks, UTF-8)"
     )
     parser.add_argument(
         "output_map_file",
