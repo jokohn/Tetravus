@@ -1,9 +1,12 @@
 import argparse
+import copy
 import datetime
 import json
+import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.optim.lr_scheduler import CosineAnnealingLR
 
 
 def load_text_token_file(file_path):
@@ -22,6 +25,22 @@ def get_batch(data, batch_size, block_size, device):
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
     x, y = x.to(device), y.to(device)
     return x, y
+
+def get_lr(it, warmup_steps, total_steps, max_lr, min_lr):
+    # 1) Linear warmup for the first few steps
+    if it < warmup_steps:
+        return max_lr * it / warmup_steps
+    
+    # 2) If we exceed total_steps, return min_lr
+    if it > total_steps:
+        return min_lr
+    
+    # 3) In between, use cosine decay down to min_lr
+    decay_ratio = (it - warmup_steps) / (total_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) 
+    
+    return min_lr + coeff * (max_lr - min_lr)
 
 
 @torch.no_grad()
@@ -70,18 +89,39 @@ class Head(nn.Module):
 
 
 class MultiHeadAttention(nn.Module):
-    """ multiple heads of self-attention in parallel """
-
     def __init__(self, num_heads, head_size, n_embd, block_size, dropout):
         super().__init__()
-        self.heads = nn.ModuleList([Head(head_size, n_embd, block_size, dropout) for _ in range(num_heads)])
-        self.proj = nn.Linear(head_size * num_heads, n_embd)
-        self.dropout = nn.Dropout(dropout)
+        self.RESIDUAL_SCALE_INIT = True
+        self.n_head = num_heads
+        self.head_size = head_size
+        # One big linear layer for all Q, K, V
+        self.qkv_attn = nn.Linear(n_embd, 3 * n_embd, bias=False)
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.proj.RESIDUAL_SCALE_INIT = True
+        self.attn_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout)
+        self.register_buffer("tril", torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
-        out = self.dropout(self.proj(out))
-        return out
+        B, T, C = x.shape
+        # Batch, Time, (3 * Heads * HeadSize)
+        q, k, v = self.qkv_attn(x).split(C, dim=2)
+        
+        # Reshape for multi-head parallel processing
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        # Standard Scaled Dot-Product Attention
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        att = att.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        att = F.softmax(att, dim=-1)
+        att = self.attn_dropout(att)
+        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        
+        # Re-assemble heads
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        return self.resid_dropout(self.proj(y))
 
 
 class FeedFoward(nn.Module):
@@ -91,10 +131,11 @@ class FeedFoward(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(dropout),
         )
+        self.net[2].RESIDUAL_SCALE_INIT = True
 
     def forward(self, x):
         return self.net(x)
@@ -120,7 +161,7 @@ class Block(nn.Module):
 
 class GPTLanguageModel(nn.Module):
 
-    def __init__(self, vocab_size, n_embd, block_size, n_head, n_layer, dropout, device):
+    def __init__(self, vocab_size, n_embd, block_size, n_head, n_layer, dropout, device, label_smoothing):
         super().__init__()
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
@@ -129,16 +170,22 @@ class GPTLanguageModel(nn.Module):
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
         self.lm_head = nn.Linear(n_embd, vocab_size)
         self.device = device
-
+        self.label_smoothing = label_smoothing
+        self.n_layer = n_layer
         self.apply(self._init_weights)
+        self.lm_head.weight = self.token_embedding_table.weight
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std = 0.02
+            if hasattr(module, 'RESIDUAL_SCALE_INIT'):
+                std *= (2 * self.n_layer) ** -0.5 # Scaling for depth
+            nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
-                torch.nn.init.zeros_(module.bias)
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            std = 0.02
+            nn.init.normal_(module.weight, mean=0.0, std=std)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
@@ -157,11 +204,11 @@ class GPTLanguageModel(nn.Module):
             B, T, C = logits.shape
             logits = logits.view(B*T, C)
             targets = targets.view(B*T)
-            loss = F.cross_entropy(logits, targets)
+            loss = F.cross_entropy(logits, targets, label_smoothing=self.label_smoothing)
 
         return logits, loss
 
-    def generate(self, idx, max_new_tokens, block_size):
+    def generate(self, idx, max_new_tokens, block_size, temperature=1.0, top_k=None):
         # idx is (B, T) array of indices in the current context
         # Ensure we have at least one token to start with
         if idx.shape[1] == 0:
@@ -173,7 +220,11 @@ class GPTLanguageModel(nn.Module):
             # get the predictions
             logits, loss = self(idx_cond)
             # focus only on the last time step
-            logits = logits[:, -1, :] # becomes (B, C)
+            logits = logits[:, -1, :] / temperature # becomes (B, C), apply temperature
+            # optionally crop the logits to only the top_k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float('Inf')
             # apply softmax to get probabilities
             probs = F.softmax(logits, dim=-1) # (B, C)
             # sample from the distribution
@@ -218,7 +269,7 @@ def main():
     parser.add_argument(
         '--batch-size',
         type=int,
-        default=64,
+        default=128,
         help='Batch size (default: 64)'
     )
     parser.add_argument(
@@ -276,10 +327,40 @@ def main():
         help='Dropout rate (default: 0.2)'
     )
     parser.add_argument(
+        '--label-smoothing',
+        type=float,
+        default=0.1,
+        help='Label smoothing rate (default: 0.1)'
+    )
+    parser.add_argument(
+        '--weight-decay',
+        type=float,
+        default=0.1,
+        help='Weight decay rate (default: 0.1)'
+    )
+    parser.add_argument(
         '--seed',
         type=int,
         default=1337,
         help='Random seed (default: 1337)'
+    )
+    parser.add_argument(
+        '--min-lr',
+        type=float,
+        default=0.0,
+        help='Minimum learning rate for cosine decay scheduler (default: 0.0)'
+    )
+    parser.add_argument(
+        '--early-stop-patience',
+        type=int,
+        default=5,
+        help='Number of evaluation intervals to wait before early stopping (default: 5)'
+    )
+    parser.add_argument(
+        '--warmup-steps',
+        type=int,
+        default=500,
+        help='Number of steps for linear warmup (default: 500)'
     )
     
     args = parser.parse_args()
@@ -318,7 +399,8 @@ def main():
         n_head=args.n_head,
         n_layer=args.n_layer,
         dropout=args.dropout,
-        device=device
+        device=device,
+        label_smoothing=args.label_smoothing
     )
     model = model.to(device)
     
@@ -326,22 +408,56 @@ def main():
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"{num_params:.2f}M parameters")
     
-    # Create optimizer
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
+    param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
+    
+    decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+    nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+    
+    optim_groups = [
+        {'params': decay_params, 'weight_decay': args.weight_decay},
+        {'params': nodecay_params, 'weight_decay': 0.0}
+    ]
+    optimizer = torch.optim.AdamW(optim_groups, lr=args.learning_rate, betas=(0.9, 0.95))
+    
+    # Early stopping tracking variables
+    best_val_loss = float('inf')
+    patience_counter = 0
+    best_model_state = None
+    early_stopped = False
     
     # Training loop
     print(f"Starting training for {args.max_iters} iterations...")
     for iter in range(args.max_iters):
         # Evaluate loss periodically
+        lr = get_lr(iter, args.warmup_steps, args.max_iters, args.learning_rate, args.min_lr)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
         if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
             losses = estimate_loss(
                 model, train_data, val_data, 
                 args.batch_size, args.block_size, 
                 args.eval_iters, device
             )
-            print(f"step {iter}, time {str(datetime.datetime.now())}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            print(f"step {iter}, time {str(datetime.datetime.now())}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {lr:.6f}")
+            
+            # Early stopping logic
+            if losses['val'] < best_val_loss:
+                best_val_loss = losses['val']
+                patience_counter = 0
+                best_model_state = copy.deepcopy(model.state_dict())
+                print(f"  -> New best validation loss: {best_val_loss:.4f}")
+            else:
+                patience_counter += 1
+                print(f"  -> No improvement ({patience_counter}/{args.early_stop_patience})")
+            
+            # Check for early stopping
+            if patience_counter >= args.early_stop_patience:
+                print(f"\nEarly stopping triggered after {iter} iterations (patience: {args.early_stop_patience})")
+                early_stopped = True
+                break
+            
             context = torch.zeros((1, 1), dtype=torch.long, device=device)
-            generated_ids = model.generate(context, max_new_tokens=50, block_size=args.block_size)[0].tolist()
+            generated_ids = model.generate(context, max_new_tokens=50, block_size=args.block_size, temperature=0.8, top_k=50)[0].tolist()
             generated_tokens = [decoder.get(token_id, f"<UNK_{token_id}>") for token_id in generated_ids]
             generated_text = ''.join(generated_tokens)
             print(generated_text)
@@ -353,7 +469,15 @@ def main():
         logits, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+    
+    # Restore best model if early stopping occurred or if we have a best model state
+    if best_model_state is not None:
+        print(f"\nRestoring best model with validation loss: {best_val_loss:.4f}")
+        model.load_state_dict(best_model_state)
+        if early_stopped:
+            print("(Early stopping was triggered)")
     
     # Save model
     print(f"Saving model to {args.output_model}...")
@@ -363,14 +487,14 @@ def main():
     # Generate from the model
     print("\nGenerating sample output...")
     context = torch.zeros((1, 1), dtype=torch.long, device=device)
-    generated_ids = model.generate(context, max_new_tokens=50, block_size=args.block_size)[0].tolist()
+    generated_ids = model.generate(context, max_new_tokens=50, block_size=args.block_size, temperature=0.8, top_k=50)[0].tolist()
     generated_tokens = [decoder.get(token_id, f"<UNK_{token_id}>") for token_id in generated_ids]
     generated_text = ''.join(generated_tokens)
     print(generated_text)
     
     # Generate longer output to file
     print("\nGenerating longer output to more.txt...")
-    generated_ids_long = model.generate(context, max_new_tokens=1000, block_size=args.block_size)[0].tolist()
+    generated_ids_long = model.generate(context, max_new_tokens=1000, block_size=args.block_size, temperature=0.8, top_k=50)[0].tolist()
     generated_tokens_long = [decoder.get(token_id, f"<UNK_{token_id}>") for token_id in generated_ids_long]
     generated_text_long = ''.join(generated_tokens_long)
     with open('more.txt', 'w', encoding='utf-8') as f:

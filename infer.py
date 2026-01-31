@@ -55,6 +55,11 @@ def load_model_and_token_map(model_path, token_map_path, device):
     model = torch.load(model_path, map_location=device, weights_only=False)
     model = model.to(device)
     model.eval()  # Set to evaluation mode
+
+    num_params = sum(p.numel() for p in model.parameters()) / 1e6
+    print(f"{num_params:.2f}M parameters")
+
+    print(f"Model parameters: {model.parameters()}")
     
     # Extract block_size from model
     block_size = model.position_embedding_table.weight.shape[0]
@@ -299,6 +304,8 @@ def parse_tokens_to_card(tokens, initial_card):
     
     # Create token stream
     stream = TokenStream(tokens)
+    print(len(tokens))
+    print(tokens)
     
     # Skip begin_card_token if present
     if stream.has_next() and stream.peek() == begin_card_token:
@@ -307,11 +314,11 @@ def parse_tokens_to_card(tokens, initial_card):
     # Parse tokens until end_card_token or end of stream
     while stream.has_next():
         current_token = stream.peek()
-        
+
         # Check for end_card_token
         if current_token == end_card_token:
             stream.advance()
-            break
+            return card
         # Parse name field
         elif current_token == begin_name_token:
             if card.name is None:  # Only parse if not already set
@@ -390,8 +397,6 @@ def parse_tokens_to_card(tokens, initial_card):
         else:       
         # Unknown token, skip it
             stream.advance()
-    
-    return card
 
 
 def print_card(card):
