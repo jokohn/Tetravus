@@ -7,7 +7,18 @@ import math
 
 from card import Card
 from tokenizers.oracle_text_helper_functions.preprocess_oracle_text import UnsupportedCharacterError
-from special_tokens import begin_card_token, end_card_token
+from special_tokens import (
+    begin_card_token,
+    end_card_token,
+    fim_begin_token,
+    fim_end_token,
+    sentinel_tokens,
+)
+from fim_utils import (
+    get_canonical_fields_for_card,
+    build_fim_block,
+    CANONICAL_FIELD_ORDER,
+)
 
 
 def get_available_fields(card):
@@ -36,6 +47,149 @@ def get_available_fields(card):
         fields.append("loyalty")
     
     return fields
+
+
+# Weights for sampling k (number of fields to mask): favor 5-6, occasionally 2-4 or 7-9.
+# Index i corresponds to k = 2 + i (so k=2..9 for 8 weights).
+K_SAMPLE_WEIGHTS = [1, 2, 4, 6, 6, 4, 2, 1]
+
+
+def sample_k_for_fim(num_fields):
+    """
+    Sample k (number of fields to mask) with 1 < k < num_fields.
+    Distribution favors 5 and 6 when num_fields is large enough.
+    """
+    if num_fields <= 2:
+        return None  # cannot satisfy 1 < k < n
+    valid_k = list(range(2, num_fields))
+    # Use first (num_fields - 2) weights
+    w = K_SAMPLE_WEIGHTS[: len(valid_k)]
+    return random.choices(valid_k, weights=w, k=1)[0]
+
+
+def tokenize_card_file_fim(
+    cleaned_cards_file_name,
+    seed=None,
+    train_test_split=0.8,
+    blocks_per_card=10,
+):
+    """
+    Tokenize cards: each card generates blocks_per_card blocks for its target set (train or test).
+    Half of the blocks are standard (canonical order), half are FIM. FIM blocks use different
+    random masks each time.
+
+    Returns:
+        token_map, train_token_blocks, test_token_blocks, metadata
+    """
+    if seed is not None:
+        random.seed(seed)
+
+    token_map = {
+        begin_card_token: 0,
+        end_card_token: 1,
+        fim_begin_token: 2,
+        fim_end_token: 3,
+    }
+    for i, st in enumerate(sentinel_tokens):
+        token_map[st] = 4 + i
+    token_counter = 4 + len(sentinel_tokens)
+
+    train_token_blocks = []
+    test_token_blocks = []
+
+    processed_cards = 0
+    failed_cards = 0
+    train_cards = 0
+    test_cards = 0
+
+    num_standard = blocks_per_card // 2
+    num_fim = blocks_per_card - num_standard
+
+    with open(cleaned_cards_file_name, "r") as f:
+        for card_dict in ijson.items(f, "item"):
+            try:
+                card = Card.from_json(None, card_dict)
+                canonical_fields = get_canonical_fields_for_card(card)
+                if len(canonical_fields) < 3:
+                    failed_cards += 1
+                    continue
+
+                is_training = random.random() < train_test_split
+                target_blocks = train_token_blocks if is_training else test_token_blocks
+
+                standard_block = [begin_card_token] + card.generate_tokens(canonical_fields) + [end_card_token]
+
+                for _ in range(num_standard):
+                    for token in standard_block:
+                        if token not in token_map:
+                            token_map[token] = token_counter
+                            token_counter += 1
+                    target_blocks.append(standard_block)
+
+                for _ in range(num_fim):
+                    k = sample_k_for_fim(len(canonical_fields))
+                    if k is None:
+                        block_tokens = standard_block
+                    else:
+                        mask_set = set(random.sample(canonical_fields, k))
+                        runs = _compute_runs_for_fim(canonical_fields, mask_set)
+                        if len(runs) > len(sentinel_tokens):
+                            block_tokens = standard_block
+                        else:
+                            try:
+                                block_tokens = build_fim_block(card, mask_set)
+                            except ValueError:
+                                block_tokens = standard_block
+                    for token in block_tokens:
+                        if token not in token_map:
+                            token_map[token] = token_counter
+                            token_counter += 1
+                    target_blocks.append(block_tokens)
+
+                processed_cards += 1
+                if is_training:
+                    train_cards += 1
+                else:
+                    test_cards += 1
+
+                if processed_cards % 500 == 0:
+                    print(
+                        f"Processed card {processed_cards} (train: {train_cards}, test: {test_cards}, "
+                        f"blocks: train={len(train_token_blocks)}, test={len(test_token_blocks)})"
+                    )
+
+            except (ValueError, UnsupportedCharacterError):
+                failed_cards += 1
+                continue
+
+    metadata = {
+        "processed_cards": processed_cards,
+        "failed_cards": failed_cards,
+        "train_cards": train_cards,
+        "test_cards": test_cards,
+        "train_blocks": len(train_token_blocks),
+        "test_blocks": len(test_token_blocks),
+        "total_blocks": len(train_token_blocks) + len(test_token_blocks),
+        "total_unique_tokens": len(token_map),
+    }
+
+    return token_map, train_token_blocks, test_token_blocks, metadata
+
+
+def _compute_runs_for_fim(canonical_fields, mask_set):
+    """Compute runs of consecutive masked fields (same logic as fim_utils._compute_runs)."""
+    runs = []
+    current_run = []
+    for f in canonical_fields:
+        if f in mask_set:
+            current_run.append(f)
+        else:
+            if current_run:
+                runs.append(current_run)
+                current_run = []
+    if current_run:
+        runs.append(current_run)
+    return runs
 
 
 def generate_field_permutations(fields, num_permutations):
@@ -163,129 +317,116 @@ def tokenize_card_file_permuted(cleaned_cards_file_name, num_permutations=10, se
 def shuffle_and_encode_token_blocks(token_blocks, token_map):
     """
     Randomly shuffle token blocks and encode as chr-encoded strings.
-    
+
     Args:
         token_blocks: List of token blocks (each is a list of token strings)
         token_map: Dict mapping token strings to numeric IDs
-        
+
     Returns:
-        List of chr-encoded strings (one per token block, each character is a token ID)
+        List of chr-encoded strings (one per token block).
     """
-    # Shuffle the blocks randomly
     shuffled_blocks = token_blocks.copy()
     random.shuffle(shuffled_blocks)
-    
     encoded_blocks = []
-    
     for block in shuffled_blocks:
-        # Convert token strings to numeric IDs
         token_ids = [token_map[token] for token in block]
-        
-        # Convert token IDs to characters using chr()
-        # Each character's Unicode code point represents a token ID
-        # Supports token IDs up to 0x10FFFF (1,114,111 unique tokens)
-        char_string = ''.join(chr(token_id) for token_id in token_ids)
-        
+        char_string = "".join(chr(token_id) for token_id in token_ids)
         encoded_blocks.append(char_string)
-    
     return encoded_blocks
 
 
-def write_tokenized_output(train_blocks_encoded, test_blocks_encoded, token_map, 
-                          train_output_text_file, test_output_text_file, output_map_file, metadata):
-    """
-    Write chr-encoded token blocks to text files and token map to JSON file.
-    
-    Args:
-        train_blocks_encoded: List of chr-encoded token block strings for training
-        test_blocks_encoded: List of chr-encoded token block strings for test
-        token_map: Dict mapping token strings to numeric IDs
-        train_output_text_file: Path for output training text file (blocks concatenated)
-        test_output_text_file: Path for output test text file (blocks concatenated)
-        output_map_file: Path for output token map JSON file
-        metadata: Dict with processing metadata
-    """
-    # Write training token blocks to text file (one per line)
-    with open(train_output_text_file, 'w', encoding='utf-8') as f:
+def write_tokenized_output(
+    train_blocks_encoded,
+    test_blocks_encoded,
+    token_map,
+    train_output_text_file,
+    test_output_text_file,
+    output_map_file,
+    metadata,
+):
+    """Write chr-encoded token blocks to text files and token map to JSON file."""
+    with open(train_output_text_file, "w", encoding="utf-8") as f:
         for encoded_block in train_blocks_encoded:
             f.write(encoded_block)
-    
-    # Write test token blocks to text file (one per line)
-    with open(test_output_text_file, 'w', encoding='utf-8') as f:
+
+    with open(test_output_text_file, "w", encoding="utf-8") as f:
         for encoded_block in test_blocks_encoded:
             f.write(encoded_block)
-    
-    # Write token map and metadata to JSON file
-    output_data = {
-        "token_map": token_map,
-        "metadata": metadata
-    }
-    
-    with open(output_map_file, 'w') as f:
+
+    output_data = {"token_map": token_map, "metadata": metadata}
+    with open(output_map_file, "w") as f:
         json.dump(output_data, f, indent=2)
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Tokenize a cleaned cards JSON file with field permutations for LLM training."
+        description="Tokenize a cleaned cards JSON file with FIM (50%% Standard / 50%% FIM) for LLM training."
     )
     parser.add_argument(
         "cleaned_cards_file_name",
-        help="Path to the input cleaned cards JSON file"
+        help="Path to the input cleaned cards JSON file",
     )
     parser.add_argument(
         "train_output_text_file",
-        help="Path to the output training text file (chr-encoded token blocks, UTF-8)"
+        help="Path to the output training text file (chr-encoded token blocks, UTF-8)",
     )
     parser.add_argument(
         "test_output_text_file",
-        help="Path to the output test text file (chr-encoded token blocks, UTF-8)"
+        help="Path to the output test text file (chr-encoded token blocks, UTF-8)",
     )
     parser.add_argument(
         "output_map_file",
-        help="Path to the output token map JSON file"
-    )
-    parser.add_argument(
-        "--num-permutations",
-        type=int,
-        default=10,
-        help="Number of field permutations per card (default: 10)"
+        help="Path to the output token map JSON file",
     )
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Random seed for reproducibility"
+        help="Random seed for reproducibility",
     )
     parser.add_argument(
         "--train-test-split",
         type=float,
         default=0.8,
-        help="Fraction of cards to assign to training set (default: 0.8)"
+        help="Fraction of cards to assign to training set (default: 0.8)",
     )
-    
+    parser.add_argument(
+        "--blocks-per-card",
+        type=int,
+        default=10,
+        help="Number of blocks to generate per card (half standard, half FIM) (default: 10)",
+    )
     args = parser.parse_args()
-    
+
     if not (0.0 < args.train_test_split < 1.0):
         parser.error("--train-test-split must be between 0.0 and 1.0")
-    
-    print(f"Tokenizing cards with {args.num_permutations} permutations per card...")
+    if args.blocks_per_card < 1:
+        parser.error("--blocks-per-card must be at least 1")
+
+    print("Tokenizing cards with FIM (50% Standard / 50% FIM)...")
+    print(f"Blocks per card: {args.blocks_per_card} (standard: {args.blocks_per_card // 2}, FIM: {args.blocks_per_card - args.blocks_per_card // 2})")
     print(f"Train/test split: {args.train_test_split:.1%} training, {1 - args.train_test_split:.1%} test")
     print(f"Input file: {args.cleaned_cards_file_name}")
-    
-    token_map, train_token_blocks, test_token_blocks, metadata = tokenize_card_file_permuted(
+
+    token_map, train_token_blocks, test_token_blocks, metadata = tokenize_card_file_fim(
         args.cleaned_cards_file_name,
-        args.num_permutations,
-        args.seed,
-        args.train_test_split
+        seed=args.seed,
+        train_test_split=args.train_test_split,
+        blocks_per_card=args.blocks_per_card,
     )
-    
+
     print(f"\nTokenization complete:")
     print(f"  Processed cards: {metadata['processed_cards']}")
     print(f"  Failed cards: {metadata['failed_cards']}")
-    if metadata['processed_cards'] > 0:
-        print(f"  Training cards: {metadata['train_cards']} ({metadata['train_cards']/metadata['processed_cards']*100:.1f}%)")
-        print(f"  Test cards: {metadata['test_cards']} ({metadata['test_cards']/metadata['processed_cards']*100:.1f}%)")
+    if metadata["processed_cards"] > 0:
+        print(
+            f"  Training cards: {metadata['train_cards']} "
+            f"({metadata['train_cards']/metadata['processed_cards']*100:.1f}%)"
+        )
+        print(
+            f"  Test cards: {metadata['test_cards']} "
+            f"({metadata['test_cards']/metadata['processed_cards']*100:.1f}%)"
+        )
     else:
         print(f"  Training cards: {metadata['train_cards']}")
         print(f"  Test cards: {metadata['test_cards']}")
@@ -293,12 +434,12 @@ def main():
     print(f"  Test blocks: {metadata['test_blocks']}")
     print(f"  Total blocks: {metadata['total_blocks']}")
     print(f"  Unique tokens: {metadata['total_unique_tokens']}")
-    
+
     print("\nShuffling and encoding token blocks...")
     train_encoded_blocks = shuffle_and_encode_token_blocks(train_token_blocks, token_map)
     test_encoded_blocks = shuffle_and_encode_token_blocks(test_token_blocks, token_map)
-    
-    print(f"Writing output files...")
+
+    print("Writing output files...")
     write_tokenized_output(
         train_encoded_blocks,
         test_encoded_blocks,
@@ -306,10 +447,10 @@ def main():
         args.train_output_text_file,
         args.test_output_text_file,
         args.output_map_file,
-        metadata
+        metadata,
     )
-    
-    print(f"\nOutput saved:")
+
+    print("\nOutput saved:")
     print(f"  Training token blocks: {args.train_output_text_file}")
     print(f"  Test token blocks: {args.test_output_text_file}")
     print(f"  Token map: {args.output_map_file}")

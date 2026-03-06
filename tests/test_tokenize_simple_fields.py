@@ -30,7 +30,7 @@ class TestTokenizeSimpleFields(unittest.TestCase):
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_set_name(token_stream), set_code)
 
-    def tokenize_power(self):
+    def test_tokenize_power(self):
         power = "4"
         tokens = tokenize_power(power)
         self.assertEqual(tokens, ['<power_4>'])

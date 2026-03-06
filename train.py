@@ -43,6 +43,47 @@ def get_lr(it, warmup_steps, total_steps, max_lr, min_lr):
     return min_lr + coeff * (max_lr - min_lr)
 
 
+def apply_rotary_emb(x, cos, sin):
+    """
+    Apply rotary embeddings to x. x has shape (..., seq_len, head_size);
+    cos, sin have shape (seq_len, head_size/2) and will be broadcast.
+    """
+    # x: (..., T, hs) -> (..., T, hs/2, 2)
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    # cos, sin: (T, hs/2) -> need to broadcast to (..., T, hs/2)
+    x_rotated_0 = x1 * cos - x2 * sin
+    x_rotated_1 = x1 * sin + x2 * cos
+    # Interleave back: (..., T, hs)
+    x_out = torch.stack([x_rotated_0, x_rotated_1], dim=-1).flatten(-2)
+    return x_out
+
+
+class RotaryEmbedding(nn.Module):
+    """Rotary Position Embedding (RoPE). No learned parameters; uses buffer for inverse frequencies."""
+
+    def __init__(self, head_size, base=10000.0):
+        super().__init__()
+        assert head_size % 2 == 0, "head_size must be even for RoPE"
+        inv_freq = 1.0 / (base ** (torch.arange(0, head_size, 2).float() / head_size))
+        self.register_buffer("inv_freq", inv_freq)
+
+    def forward(self, x, positions=None):
+        """
+        Apply RoPE to x. x has shape (..., T, head_size).
+        If positions is None, use torch.arange(T, device=x.device).
+        """
+        T = x.size(-2)
+        device, dtype = x.device, x.dtype
+        if positions is None:
+            positions = torch.arange(T, device=device, dtype=dtype)
+        # inv_freq: (head_size/2,) -> (1, head_size/2)
+        inv_freq = self.inv_freq.to(dtype=dtype)
+        freqs = positions.unsqueeze(-1) * inv_freq.unsqueeze(0)  # (T, head_size/2)
+        cos = freqs.cos()
+        sin = freqs.sin()
+        return apply_rotary_emb(x, cos, sin)
+
+
 @torch.no_grad()
 def estimate_loss(model, train_data, val_data, batch_size, block_size, eval_iters, device):
     """Estimate loss on train and validation sets."""
@@ -91,9 +132,11 @@ class Head(nn.Module):
 class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size, n_embd, block_size, dropout):
         super().__init__()
+        assert head_size % 2 == 0, "head_size must be even for RoPE"
         self.RESIDUAL_SCALE_INIT = True
         self.n_head = num_heads
         self.head_size = head_size
+        self.rope = RotaryEmbedding(head_size)
         # One big linear layer for all Q, K, V
         self.qkv_attn = nn.Linear(n_embd, 3 * n_embd, bias=False)
         self.proj = nn.Linear(n_embd, n_embd)
@@ -111,6 +154,10 @@ class MultiHeadAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        # Apply rotary position embedding to Q and K
+        q = self.rope(q)
+        k = self.rope(k)
 
         # Standard Scaled Dot-Product Attention
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -148,6 +195,7 @@ class Block(nn.Module):
         # n_embd: embedding dimension, n_head: the number of heads we'd like
         super().__init__()
         head_size = n_embd // n_head
+        assert head_size % 2 == 0, "n_embd // n_head must be even for RoPE"
         self.sa = MultiHeadAttention(n_head, head_size, n_embd, block_size, dropout)
         self.ffwd = FeedFoward(n_embd, dropout)
         self.ln1 = nn.LayerNorm(n_embd)
@@ -163,9 +211,9 @@ class GPTLanguageModel(nn.Module):
 
     def __init__(self, vocab_size, n_embd, block_size, n_head, n_layer, dropout, device, label_smoothing):
         super().__init__()
+        self.block_size = block_size
         # each token directly reads off the logits for the next token from a lookup table
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(*[Block(n_embd, n_head, block_size, dropout) for _ in range(n_layer)])
         self.ln_f = nn.LayerNorm(n_embd) # final layer norm
         self.lm_head = nn.Linear(n_embd, vocab_size)
@@ -190,10 +238,9 @@ class GPTLanguageModel(nn.Module):
     def forward(self, idx, targets=None):
         B, T = idx.shape
 
-        # idx and targets are both (B,T) tensor of integers
+        # idx and targets are both (B,T) tensor of integers (position encoding via RoPE in attention)
         tok_emb = self.token_embedding_table(idx) # (B,T,C)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=self.device)) # (T,C)
-        x = tok_emb + pos_emb # (B,T,C)
+        x = tok_emb # (B,T,C)
         x = self.blocks(x) # (B,T,C)
         x = self.ln_f(x) # (B,T,C)
         logits = self.lm_head(x) # (B,T,vocab_size)
@@ -362,7 +409,6 @@ def main():
         default=500,
         help='Number of steps for linear warmup (default: 500)'
     )
-    
     args = parser.parse_args()
     
     # Set random seed
@@ -434,8 +480,8 @@ def main():
             param_group['lr'] = lr
         if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
             losses = estimate_loss(
-                model, train_data, val_data, 
-                args.batch_size, args.block_size, 
+                model, train_data, val_data,
+                args.batch_size, args.block_size,
                 args.eval_iters, device
             )
             print(f"step {iter}, time {str(datetime.datetime.now())}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {lr:.6f}")

@@ -5,7 +5,7 @@ import random
 import sys
 import torch
 
-from train import GPTLanguageModel, Block, MultiHeadAttention, Head, FeedFoward
+from train import GPTLanguageModel, Block, MultiHeadAttention, Head, FeedFoward, RotaryEmbedding
 from special_tokens import begin_card_token, end_card_token
 from card import Card
 from token_stream import TokenStream
@@ -20,8 +20,10 @@ from tokenizers.tokenize_simple_card_fields import (
 from special_tokens import (
     begin_name_token, end_name_token, begin_oracle_text_token,
     end_oracle_text_token, begin_mana_cost_token, end_mana_cost_token,
-    begin_type_line_token, end_type_line_token
+    begin_type_line_token, end_type_line_token,
+    fim_begin_token, fim_end_token, sentinel_tokens,
 )
+from fim_utils import build_fim_prompt_for_inference
 
 def load_model_and_token_map(model_path, token_map_path, device):
     """
@@ -61,8 +63,11 @@ def load_model_and_token_map(model_path, token_map_path, device):
 
     print(f"Model parameters: {model.parameters()}")
     
-    # Extract block_size from model
-    block_size = model.position_embedding_table.weight.shape[0]
+    # Extract block_size from model (RoPE models use model.block_size; legacy checkpoints use position_embedding_table)
+    if hasattr(model, 'block_size'):
+        block_size = model.block_size
+    else:
+        block_size = model.position_embedding_table.weight.shape[0]
     print(f"Model block size: {block_size}")
     
     return model, token_map, decoder, block_size, vocab_size
@@ -235,45 +240,102 @@ def create_card_from_args(args):
     )
 
 
-def tokenize_card_fields(card):
+def _parse_chunk_into_fields(chunk_tokens, field_names, card):
     """
-    Tokenize non-None card fields and return token list.
-    
-    Args:
-        card: Card object
-        
+    Try to parse a chunk of tokens as a sequence of fields (e.g. one run).
+    For each field name in order, attempt to detokenize and set on card.
+    Stops on first parse failure or when stream is consumed.
+
     Returns:
-        List of token strings starting with begin_card_token
+        Number of fields successfully parsed.
     """
-    # Determine which fields are non-None
-    fields = []
-    if card.name is not None:
-        fields.append('name')
-    if card.oracle_text is not None:
-        fields.append('oracle_text')
-    if card.mana_cost is not None:
-        fields.append('mana_cost')
-    if card.type_line is not None:
-        fields.append('type_line')
-    if card.release_year is not None:
-        fields.append('release_year')
-    if card.rarity is not None:
-        fields.append('rarity')
-    if card.set_code is not None:
-        fields.append('set')
-    if card.power is not None:
-        fields.append('power')
-    if card.toughness is not None:
-        fields.append('toughness')
-    if card.loyalty is not None:
-        fields.append('loyalty')
-    
-    # Generate tokens for available fields
-    tokens = [begin_card_token]
-    if fields:
-        tokens.extend(card.generate_tokens(fields))
-    
-    return tokens
+    if not chunk_tokens or not field_names:
+        return 0
+    stream = TokenStream(chunk_tokens)
+    parsed = 0
+    for field_name in field_names:
+        if not stream.has_next():
+            break
+        try:
+            if field_name == "name" and stream.peek() == begin_name_token:
+                card.name = detokenize_name(stream)
+                parsed += 1
+            elif field_name == "mana_cost" and stream.peek() == begin_mana_cost_token:
+                card.mana_cost = detokenize_mana_cost(stream)
+                parsed += 1
+            elif field_name == "type_line" and stream.peek() == begin_type_line_token:
+                card.type_line = detokenize_type_line(stream)
+                parsed += 1
+            elif field_name == "oracle_text" and stream.peek() == begin_oracle_text_token:
+                card.oracle_text = detokenize_oracle_text(stream, card_name=card.name)
+                parsed += 1
+            elif field_name == "release_year" and stream.peek().startswith("<release_year_"):
+                card.release_year = detokenize_release_year(stream)
+                parsed += 1
+            elif field_name == "rarity" and stream.peek().startswith("<rarity_"):
+                card.rarity = detokenize_rarity(stream)
+                parsed += 1
+            elif field_name == "set" and stream.peek().startswith("<set_"):
+                card.set_code = detokenize_set_name(stream)
+                parsed += 1
+            elif field_name == "power" and stream.peek().startswith("<power_"):
+                card.power = detokenize_power(stream)
+                parsed += 1
+            elif field_name == "toughness" and stream.peek().startswith("<toughness_"):
+                card.toughness = detokenize_toughness(stream)
+                parsed += 1
+            elif field_name == "loyalty" and stream.peek().startswith("<loyalty_"):
+                card.loyalty = detokenize_loyalty(stream)
+                parsed += 1
+            else:
+                print(f"Unknown token: {stream.peek()}")
+                break
+        except (ValueError, IndexError) as e:
+            print(f"Error parsing token: {e}")
+            break
+    return parsed
+
+
+def _split_generated_by_sentinels(generated_tokens):
+    """
+    Split generated token list by sentinel tokens (sentinel_1, sentinel_2, ...) and </card>.
+    Returns list of chunks; chunk[i] is the content between sentinel_i and sentinel_{i+1} (or </card>).
+    """
+    chunks = []
+    current = []
+    for t in generated_tokens:
+        if t == end_card_token:
+            if current:
+                chunks.append(current)
+            break
+        if t in sentinel_tokens[1:]:  # skip sentinel_0 (we're already past it)
+            if current:
+                chunks.append(current)
+            current = []
+        else:
+            current.append(t)
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def parse_generated_sentinel_tail(generated_tokens, runs, card):
+    """
+    Parse the model-generated token list (content after </FIM><sentinel_0>).
+    Split by sentinel tokens into chunks; each chunk corresponds to one run of fields.
+    Try to parse each chunk into the run's fields and set on card.
+
+    Args:
+        generated_tokens: List of token strings (model output after prompt)
+        runs: List of lists of field names (from build_fim_prompt_for_inference)
+        card: Card to update with parsed fields (modified in place)
+    """
+    chunks = _split_generated_by_sentinels(generated_tokens)
+    print(f"Chunks: {chunks}")
+    for i, run_fields in enumerate(runs):
+        if i >= len(chunks):
+            break
+        _parse_chunk_into_fields(chunks[i], run_fields, card)
 
 
 def parse_tokens_to_card(tokens, initial_card):
@@ -304,8 +366,6 @@ def parse_tokens_to_card(tokens, initial_card):
     
     # Create token stream
     stream = TokenStream(tokens)
-    print(len(tokens))
-    print(tokens)
     
     # Skip begin_card_token if present
     if stream.has_next() and stream.peek() == begin_card_token:
@@ -697,10 +757,19 @@ def main():
         else:
             print("No fields provided - generating complete card from scratch")
         
-        # Tokenize provided fields
-        print("\nTokenizing provided fields...")
-        context_tokens = tokenize_card_fields(card)
+        # Build FIM prompt: missing fields become sentinels; prompt ends with </FIM><sentinel_0>
+        print("\nBuilding FIM context...")
+        context_tokens, runs = build_fim_prompt_for_inference(card)
         print(f"Context tokens: {len(context_tokens)} tokens")
+        if runs:
+            missing_count = sum(len(r) for r in runs)
+            print(f"Missing fields (to generate): {missing_count} in {len(runs)} gap(s)")
+        
+        # If no missing fields, card is complete
+        if not runs:
+            print("No missing fields - card is complete.")
+            print_card(card)
+            return
         
         # Convert tokens to IDs for context
         context_token_ids = []
@@ -718,21 +787,23 @@ def main():
         context = torch.tensor([context_token_ids], dtype=torch.long, device=device)
         print(f"Context length: {context.shape[1]} tokens")
         
-        # Generate tokens
+        # Generate tokens (model continues from <sentinel_0> with gap contents, then </card>)
         print(f"\nGenerating up to {args.num_tokens} tokens...")
         full_sequence, new_tokens = generate_tokens(
             model, context, args.num_tokens, block_size, device
         )
         
-        # Decode all tokens (context + generated)
+        # Decode generated part only (tokens after the prompt)
         all_token_strings = decode_tokens(full_sequence[0], decoder)
+        generated_token_strings = all_token_strings[len(context_tokens):]
+        print(f"{all_token_strings}")
         
-        # Parse tokens back into card
+        # Parse generated tail: split by sentinels, parse each chunk into run fields, merge into card
         print("\nParsing generated tokens into card fields...")
-        completed_card = parse_tokens_to_card(all_token_strings, card)
+        parse_generated_sentinel_tail(generated_token_strings, runs, card)
         
         # Print completed card
-        print_card(completed_card)
+        print_card(card)
     
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)

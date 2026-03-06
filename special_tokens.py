@@ -31,3 +31,17 @@ end_stats_definition_token = "</stats_definition>"
 
 begin_stats_change_token = "<stats_change>"
 end_stats_change_token = "</stats_change>"
+
+# FIM (Fill-In-The-Middle) tokens
+fim_begin_token = "<FIM>"
+fim_end_token = "</FIM>"
+
+# Sentinel tokens for masked spans (one per run of consecutive masked fields)
+sentinel_tokens = [
+    "<sentinel_0>",
+    "<sentinel_1>",
+    "<sentinel_2>",
+    "<sentinel_3>",
+    "<sentinel_4>",
+    "<sentinel_5>",
+]
