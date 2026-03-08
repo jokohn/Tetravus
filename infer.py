@@ -697,6 +697,12 @@ def main():
         help='Random seed. For reproducibility, set a specific seed.'
     )
     parser.add_argument(
+        '--max-retries',
+        type=int,
+        default=10,
+        help='Max number of generate+parse rounds to fill missing fields (default: 10)'
+    )
+    parser.add_argument(
         '--device',
         type=str,
         default=None,
@@ -757,52 +763,63 @@ def main():
         else:
             print("No fields provided - generating complete card from scratch")
         
-        # Build FIM prompt: missing fields become sentinels; prompt ends with </FIM><sentinel_0>
-        print("\nBuilding FIM context...")
+        # Iterative generate+parse until card is complete or max_retries reached
+        round_num = 0
+        while round_num < args.max_retries:
+            # Build FIM prompt: missing fields become sentinels; prompt ends with </FIM><sentinel_0>
+            print("\nBuilding FIM context...")
+            context_tokens, runs = build_fim_prompt_for_inference(card)
+            print(f"Context tokens: {len(context_tokens)} tokens")
+            if runs:
+                missing_count = sum(len(r) for r in runs)
+                print(f"Missing fields (to generate): {missing_count} in {len(runs)} gap(s)")
+            
+            # If no missing fields, card is complete
+            if not runs:
+                print("No missing fields - card is complete.")
+                break
+            
+            round_num += 1
+            print(f"\nRound {round_num}/{args.max_retries}")
+            
+            # Convert tokens to IDs for context
+            context_token_ids = []
+            for token in context_tokens:
+                token_id = token_map.get(token, None)
+                if token_id is not None:
+                    context_token_ids.append(token_id)
+                else:
+                    print(f"Warning: Token '{token}' not found in token map, skipping.")
+            
+            if not context_token_ids:
+                print("Warning: No valid tokens in context. Starting with begin_card_token.")
+                context_token_ids = [token_map.get(begin_card_token, 0)]
+            
+            context = torch.tensor([context_token_ids], dtype=torch.long, device=device)
+            print(f"Context length: {context.shape[1]} tokens")
+            
+            # Generate tokens (model continues from <sentinel_0> with gap contents, then </card>)
+            print(f"\nGenerating up to {args.num_tokens} tokens...")
+            full_sequence, new_tokens = generate_tokens(
+                model, context, args.num_tokens, block_size, device
+            )
+            
+            # Decode generated part only (tokens after the prompt)
+            all_token_strings = decode_tokens(full_sequence[0], decoder)
+            generated_token_strings = all_token_strings[len(context_tokens):]
+            print(f"{all_token_strings}")
+            
+            # Parse generated tail: split by sentinels, parse each chunk into run fields, merge into card
+            print("\nParsing generated tokens into card fields...")
+            parse_generated_sentinel_tail(generated_token_strings, runs, card)
+        
+        # Report if we stopped due to max retries with fields still missing
         context_tokens, runs = build_fim_prompt_for_inference(card)
-        print(f"Context tokens: {len(context_tokens)} tokens")
-        if runs:
+        if runs and round_num >= args.max_retries:
             missing_count = sum(len(r) for r in runs)
-            print(f"Missing fields (to generate): {missing_count} in {len(runs)} gap(s)")
+            print(f"\nStopped after max retries ({args.max_retries}) with {missing_count} field(s) still missing.")
         
-        # If no missing fields, card is complete
-        if not runs:
-            print("No missing fields - card is complete.")
-            print_card(card)
-            return
-        
-        # Convert tokens to IDs for context
-        context_token_ids = []
-        for token in context_tokens:
-            token_id = token_map.get(token, None)
-            if token_id is not None:
-                context_token_ids.append(token_id)
-            else:
-                print(f"Warning: Token '{token}' not found in token map, skipping.")
-        
-        if not context_token_ids:
-            print("Warning: No valid tokens in context. Starting with begin_card_token.")
-            context_token_ids = [token_map.get(begin_card_token, 0)]
-        
-        context = torch.tensor([context_token_ids], dtype=torch.long, device=device)
-        print(f"Context length: {context.shape[1]} tokens")
-        
-        # Generate tokens (model continues from <sentinel_0> with gap contents, then </card>)
-        print(f"\nGenerating up to {args.num_tokens} tokens...")
-        full_sequence, new_tokens = generate_tokens(
-            model, context, args.num_tokens, block_size, device
-        )
-        
-        # Decode generated part only (tokens after the prompt)
-        all_token_strings = decode_tokens(full_sequence[0], decoder)
-        generated_token_strings = all_token_strings[len(context_tokens):]
-        print(f"{all_token_strings}")
-        
-        # Parse generated tail: split by sentinels, parse each chunk into run fields, merge into card
-        print("\nParsing generated tokens into card fields...")
-        parse_generated_sentinel_tail(generated_token_strings, runs, card)
-        
-        # Print completed card
+        # Print card (complete or partial)
         print_card(card)
     
     except FileNotFoundError as e:
