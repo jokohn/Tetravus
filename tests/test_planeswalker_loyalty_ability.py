@@ -44,3 +44,16 @@ class TestPlaneswalkerLoyaltyAbility(unittest.TestCase):
         tokens = card.generate_tokens(["oracle_text"])
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_oracle_text(token_stream, card_name=card.name), card.oracle_text.replace('Ob Nixilis', 'Ob Nixilis, the Hate-Twisted'))
+
+    def test_detokenize_planeswalker_loyalty_ability_rejects_wrong_block_token(self):
+        """Malformed stream: name_char token in planeswalker_loyalty_ability block raises ValueError."""
+        malformed = [
+            begin_planeswalker_loyalty_ability_cost_token,
+            "<name_char_+>",
+            "<planeswalker_loyalty_ability_cost_value_1>",
+            end_planeswalker_loyalty_ability_cost_token,
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_planeswalker_loyalty_ability(TokenStream(malformed))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("planeswalker_loyalty_ability", str(ctx.exception))

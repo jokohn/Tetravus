@@ -51,9 +51,12 @@ def detokenize_mana_cost(token_stream, is_orcale_text_mana_cost=False):
     token_stream.advance()
     mana_cost_chars = []
     
+    end_token = end_oracle_text_mana_cost_token if is_orcale_text_mana_cost else end_mana_cost_token
+    valid_prefix = '<oracle_text_mana_cost_' if is_orcale_text_mana_cost else '<mana_cost_'
     current_token = token_stream.consume_token()
-    while current_token != (end_mana_cost_token if not is_orcale_text_mana_cost else end_oracle_text_mana_cost_token):
-        # Extract character from token like <mana_cost_R>
+    while current_token != end_token:
+        if not (current_token.startswith(valid_prefix) and current_token.endswith('>')):
+            raise ValueError(f"Malformed token stream: unexpected token {current_token!r} in mana cost block")
         char = current_token.replace('<mana_cost_', '').replace('>', '').replace('<oracle_text_mana_cost_', '')
         mana_cost_chars.append(f'{char.upper()}')
         current_token = token_stream.consume_token()

@@ -594,3 +594,12 @@ class TestTokenizeOracleText(unittest.TestCase):
         oracle_text = "Ward—Pay 2 Life|"
         with self.assertRaises(UnsupportedCharacterError):
             tokenize_oracle_text(oracle_text)
+
+    def test_detokenize_oracle_text_rejects_wrong_block_token(self):
+        """Malformed stream: name_char token inside oracle text block raises ValueError."""
+        malformed = [begin_oracle_text_token, "<name_char_a>", end_oracle_text_token]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_oracle_text(TokenStream(malformed))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("oracle text block", str(ctx.exception))
+        self.assertIn("<name_char_a>", str(ctx.exception))

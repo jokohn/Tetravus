@@ -25,5 +25,14 @@ class TestTokenizeName(unittest.TestCase):
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_name(token_stream), name)
 
+    def test_detokenize_name_rejects_wrong_block_token(self):
+        """Malformed stream: oracle_text token inside name block raises ValueError."""
+        malformed = ["<name>", "<oracle_text_draw>", "</name>"]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_name(TokenStream(malformed))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("name block", str(ctx.exception))
+        self.assertIn("<oracle_text_draw>", str(ctx.exception))
+
 if __name__ == "__main__":
     unittest.main()

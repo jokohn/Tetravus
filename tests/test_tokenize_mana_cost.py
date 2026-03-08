@@ -27,4 +27,20 @@ class TestTokenizeName(unittest.TestCase):
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_mana_cost(token_stream, is_orcale_text_mana_cost=True), mana_cost)
 
+    def test_detokenize_mana_cost_rejects_wrong_block_token(self):
+        """Malformed stream: name_char token in mana cost block raises ValueError."""
+        malformed = [begin_mana_cost_token, "<name_char_1>", end_mana_cost_token]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_mana_cost(TokenStream(malformed))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("mana cost block", str(ctx.exception))
+
+    def test_detokenize_oracle_text_mana_cost_rejects_wrong_prefix(self):
+        """Malformed stream: standalone mana_cost_ token in oracle-text mana cost block raises ValueError."""
+        malformed = [begin_oracle_text_mana_cost_token, "<mana_cost_1>", end_oracle_text_mana_cost_token]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_mana_cost(TokenStream(malformed), is_orcale_text_mana_cost=True)
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("mana cost block", str(ctx.exception))
+
 

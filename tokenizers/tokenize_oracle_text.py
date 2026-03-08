@@ -64,8 +64,10 @@ def detokenize_oracle_text(token_stream, card_name=None):
         elif current_token == begin_planeswalker_loyalty_ability_cost_token:
             token_stream.jump_by(-1)
             oracle_text.append(detokenize_planeswalker_loyalty_ability(token_stream))
-        else:
+        elif current_token.startswith('<oracle_text_') and current_token.endswith('>'):
             oracle_text.append(current_token.replace('<oracle_text_', '').replace('>', ''))
+        else:
+            raise ValueError(f"Malformed token stream: unexpected token {current_token!r} in oracle text block")
         current_token = token_stream.consume_token()
     oracle_text = ' '.join(oracle_text)
 

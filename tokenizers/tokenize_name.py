@@ -15,6 +15,8 @@ def detokenize_name(token_stream):
     token_stream.advance()
     current_token = token_stream.consume_token()
     while current_token != end_name_token:
+        if not (current_token.startswith('<name_char_') and current_token.endswith('>')):
+            raise ValueError(f"Malformed token stream: unexpected token {current_token!r} in name block")
         name.append(current_token.replace('<name_char_', '').replace('>', ''))
         current_token = token_stream.consume_token()
     return ''.join(name)

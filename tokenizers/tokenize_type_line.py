@@ -22,7 +22,9 @@ def detokenize_type_line(token_stream):
     while current_token != end_type_line_token:
         if current_token == subtype_break_token:
             type_line_text.append('—')
-        else:
+        elif (current_token.startswith('<type_') or current_token.startswith('<subtype_')) and current_token.endswith('>'):
             type_line_text.append(current_token.replace('<type_', '').replace('<subtype_', '').replace('>', ''))
+        else:
+            raise ValueError(f"Malformed token stream: unexpected token {current_token!r} in type line block")
         current_token = token_stream.consume_token()
     return ' '.join(type_line_text)

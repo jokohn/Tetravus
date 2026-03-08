@@ -75,3 +75,26 @@ class TestTokenizeStatFields(unittest.TestCase):
         )
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_stats_change_string(token_stream), token_string)
+
+    def test_detokenize_stats_definition_rejects_wrong_block_token(self):
+        """Malformed stream: name_char token in stats_definition block raises ValueError."""
+        malformed = [begin_stats_definition_token, "<name_char_4>", "<stats_definition_toughness_4>", end_stats_definition_token]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_stats_definition_string(TokenStream(malformed))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("stats_definition", str(ctx.exception))
+
+    def test_detokenize_stats_change_rejects_wrong_block_token(self):
+        """Malformed stream: oracle_text token in stats_change block raises ValueError."""
+        malformed = [
+            begin_stats_change_token,
+            "<stats_change_power_sign_+>",
+            "<oracle_text_2>",
+            "<stats_change_toughness_sign_+>",
+            "<stats_change_toughness_value_2>",
+            end_stats_change_token,
+        ]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_stats_change_string(TokenStream(malformed))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("stats_change", str(ctx.exception))

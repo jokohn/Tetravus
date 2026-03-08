@@ -39,5 +39,14 @@ class TestTokenizeTypeLine(unittest.TestCase):
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_type_line(token_stream), card.type_line)
 
+    def test_detokenize_type_line_rejects_wrong_block_token(self):
+        """Malformed stream: name_char token in type line block raises ValueError."""
+        malformed = [begin_type_line_token, "<name_char_C>", end_type_line_token]
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_type_line(TokenStream(malformed))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("type line block", str(ctx.exception))
+        self.assertIn("<name_char_C>", str(ctx.exception))
+
 if __name__ == "__main__":
     unittest.main()

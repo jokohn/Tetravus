@@ -4,8 +4,8 @@ import os
 
 from card import Card
 from tokenizers.tokenize_simple_card_fields import tokenize_release_year, detokenize_release_year, tokenize_rarity, \
-    detokenize_rarity, tokenize_set_name, detokenize_set_name,tokenize_power, detokenize_power, tokenize_toughness, \
-    detokenize_toughness
+    detokenize_rarity, tokenize_set_name, detokenize_set_name, tokenize_power, detokenize_power, tokenize_toughness, \
+    detokenize_toughness, detokenize_loyalty
 from token_stream import TokenStream
 
 class TestTokenizeSimpleFields(unittest.TestCase):
@@ -43,6 +43,42 @@ class TestTokenizeSimpleFields(unittest.TestCase):
         self.assertEqual(tokens, ['<toughness_4>'])
         token_stream = TokenStream(tokens)
         self.assertEqual(detokenize_toughness(token_stream), toughness)
+
+    def test_detokenize_release_year_rejects_wrong_prefix(self):
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_release_year(TokenStream(["<rarity_common>"]))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("release_year", str(ctx.exception))
+
+    def test_detokenize_rarity_rejects_wrong_prefix(self):
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_rarity(TokenStream(["<release_year_2025>"]))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("rarity", str(ctx.exception))
+
+    def test_detokenize_set_name_rejects_wrong_prefix(self):
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_set_name(TokenStream(["<rarity_common>"]))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("set_name", str(ctx.exception))
+
+    def test_detokenize_power_rejects_wrong_prefix(self):
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_power(TokenStream(["<toughness_4>"]))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("power", str(ctx.exception))
+
+    def test_detokenize_toughness_rejects_wrong_prefix(self):
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_toughness(TokenStream(["<power_4>"]))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("toughness", str(ctx.exception))
+
+    def test_detokenize_loyalty_rejects_wrong_prefix(self):
+        with self.assertRaises(ValueError) as ctx:
+            detokenize_loyalty(TokenStream(["<power_4>"]))
+        self.assertIn("Malformed token stream", str(ctx.exception))
+        self.assertIn("loyalty", str(ctx.exception))
 
     def test_tokenize_real_card(self):
         test_file = os.path.join(os.path.dirname(__file__), "test_data", "grizzly_bear.json")
