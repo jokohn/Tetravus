@@ -160,7 +160,7 @@ def initialize_context(token_map, prompt_list=None, device='cpu'):
     return context
 
 
-def generate_tokens(model, context, num_tokens, block_size, device):
+def generate_tokens(model, context, num_tokens, block_size, temperature, top_k, device):
     """
     Generate tokens using the model.
     
@@ -177,7 +177,7 @@ def generate_tokens(model, context, num_tokens, block_size, device):
         - new_tokens_tensor: Only the newly generated tokens
     """
     with torch.no_grad():
-        generated = model.generate(context, max_new_tokens=num_tokens, block_size=block_size)
+        generated = model.generate(context, max_new_tokens=num_tokens, block_size=block_size, temperature=temperature, top_k=top_k)
     
     # Extract only the newly generated tokens (everything after the initial context)
     new_tokens = generated[0, context.shape[1]:].clone()
@@ -708,6 +708,18 @@ def main():
         default=None,
         help='Device to use (cuda/cpu). Default: auto-detect'
     )
+    parser.add_argument(
+        '--temperature',
+        type=float,
+        default=0.8,
+        help='Temperature for generation. Default: 0.8'
+    )
+    parser.add_argument(
+        '--top-k',
+        type=int,
+        default=50,
+        help='Top-k for generation. Default: 50'
+    )
     
     args = parser.parse_args()
     
@@ -770,14 +782,6 @@ def main():
             print("\nBuilding FIM context...")
             context_tokens, runs = build_fim_prompt_for_inference(card)
             print(f"Context tokens: {len(context_tokens)} tokens")
-            if runs:
-                missing_count = sum(len(r) for r in runs)
-                print(f"Missing fields (to generate): {missing_count} in {len(runs)} gap(s)")
-            
-            # If no missing fields, card is complete
-            if not runs:
-                print("No missing fields - card is complete.")
-                break
             
             round_num += 1
             print(f"\nRound {round_num}/{args.max_retries}")
@@ -801,7 +805,7 @@ def main():
             # Generate tokens (model continues from <sentinel_0> with gap contents, then </card>)
             print(f"\nGenerating up to {args.num_tokens} tokens...")
             full_sequence, new_tokens = generate_tokens(
-                model, context, args.num_tokens, block_size, device
+                model, context, args.num_tokens, block_size, args.temperature, args.top_k, device
             )
             
             # Decode generated part only (tokens after the prompt)
@@ -812,6 +816,13 @@ def main():
             # Parse generated tail: split by sentinels, parse each chunk into run fields, merge into card
             print("\nParsing generated tokens into card fields...")
             parse_generated_sentinel_tail(generated_token_strings, runs, card)
+
+            is_complete, missing_fields = card.is_complete()
+            if is_complete:
+                print(f"Card is complete")
+                break
+            else:
+                print(f"Card is not complete - missing fields: {missing_fields}")
         
         # Report if we stopped due to max retries with fields still missing
         context_tokens, runs = build_fim_prompt_for_inference(card)

@@ -96,6 +96,30 @@ class Card:
                 raise ValueError(f"Invalid field: {field}")
         return tokens
 
-    def generate_all_token_string_permutations(self):
-        token_strings = []
+    def is_complete(self):
+        missing_fields = []
+        if self.name is None:
+            missing_fields.append('name')
+        if self.oracle_text is None:
+            missing_fields.append('oracle_text')
+        if self.mana_cost is None:
+            missing_fields.append('mana_cost')
+        if self.type_line is None:
+            missing_fields.append('type_line')
+        if self.release_year is None:
+            missing_fields.append('release_year')
+        if self.rarity is None:
+            missing_fields.append('rarity')
+        if self.set_code is None:
+            missing_fields.append('set')
+        type_line = self.type_line or ""
+        if 'Creature' in type_line or 'Vehicle' in type_line or 'Spacecraft' in type_line:
+            if self.power is None:
+                missing_fields.append('power')
+            if self.toughness is None:
+                missing_fields.append('toughness')
+        if 'Planeswalker' in type_line:
+            if self.loyalty is None:
+                missing_fields.append('loyalty')
+        return len(missing_fields) == 0, missing_fields
 

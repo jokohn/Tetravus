@@ -503,7 +503,7 @@ def main():
                 break
             
             context = torch.zeros((1, 1), dtype=torch.long, device=device)
-            generated_ids = model.generate(context, max_new_tokens=50, block_size=args.block_size, temperature=0.8, top_k=50)[0].tolist()
+            generated_ids = model.generate(context, max_new_tokens=50, block_size=args.block_size, temperature=1.0, top_k=50)[0].tolist()
             generated_tokens = [decoder.get(token_id, f"<UNK_{token_id}>") for token_id in generated_ids]
             generated_text = ''.join(generated_tokens)
             print(generated_text)
