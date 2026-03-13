@@ -44,31 +44,24 @@ def load_model_and_token_map(model_path, token_map_path, device):
         raise FileNotFoundError(f"Token map file not found: {token_map_path}")
     
     # Load token map
-    print(f"Loading token map from {token_map_path}...")
     with open(token_map_path, 'r') as f:
         token_map_data = json.load(f)
         token_map = token_map_data['token_map']
         decoder = {v: k for k, v in token_map.items()}
         vocab_size = len(token_map)
-    print(f"Vocabulary size: {vocab_size}")
     
     # Load model
-    print(f"Loading model from {model_path}...")
     model = torch.load(model_path, map_location=device, weights_only=False)
     model = model.to(device)
     model.eval()  # Set to evaluation mode
 
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"{num_params:.2f}M parameters")
-
-    print(f"Model parameters: {model.parameters()}")
     
     # Extract block_size from model (RoPE models use model.block_size; legacy checkpoints use position_embedding_table)
     if hasattr(model, 'block_size'):
         block_size = model.block_size
     else:
         block_size = model.position_embedding_table.weight.shape[0]
-    print(f"Model block size: {block_size}")
     
     return model, token_map, decoder, block_size, vocab_size
 
@@ -257,6 +250,12 @@ def _parse_chunk_into_fields(chunk_tokens, field_names, card):
         if not stream.has_next():
             break
         try:
+            if field_name == "power" and not card.needs_creature_stats():
+                continue
+            if field_name == "toughness" and not card.needs_creature_stats():
+                continue
+            if field_name == "loyalty" and not card.needs_planeswalker_loyalty():
+                continue
             if field_name == "name" and stream.peek() == begin_name_token:
                 card.name = detokenize_name(stream)
                 parsed += 1
@@ -288,6 +287,7 @@ def _parse_chunk_into_fields(chunk_tokens, field_names, card):
                 card.loyalty = detokenize_loyalty(stream)
                 parsed += 1
             else:
+                print(field_name)
                 print(f"Unknown token: {stream.peek()}")
                 break
         except (ValueError, IndexError) as e:
@@ -331,7 +331,7 @@ def parse_generated_sentinel_tail(generated_tokens, runs, card):
         card: Card to update with parsed fields (modified in place)
     """
     chunks = _split_generated_by_sentinels(generated_tokens)
-    print(f"Chunks: {chunks}")
+    #print(f"Chunks: {chunks}")
     for i, run_fields in enumerate(runs):
         if i >= len(chunks):
             break
@@ -803,7 +803,7 @@ def main():
             print(f"Context length: {context.shape[1]} tokens")
             
             # Generate tokens (model continues from <sentinel_0> with gap contents, then </card>)
-            print(f"\nGenerating up to {args.num_tokens} tokens...")
+            #print(f"\nGenerating up to {args.num_tokens} tokens...")
             full_sequence, new_tokens = generate_tokens(
                 model, context, args.num_tokens, block_size, args.temperature, args.top_k, device
             )
@@ -811,18 +811,17 @@ def main():
             # Decode generated part only (tokens after the prompt)
             all_token_strings = decode_tokens(full_sequence[0], decoder)
             generated_token_strings = all_token_strings[len(context_tokens):]
-            print(f"{all_token_strings}")
+            #print(f"{all_token_strings}")
             
             # Parse generated tail: split by sentinels, parse each chunk into run fields, merge into card
-            print("\nParsing generated tokens into card fields...")
+            #print("\nParsing generated tokens into card fields...")
             parse_generated_sentinel_tail(generated_token_strings, runs, card)
 
             is_complete, missing_fields = card.is_complete()
             if is_complete:
-                print(f"Card is complete")
+                #print(f"Card is complete")
                 break
-            else:
-                print(f"Card is not complete - missing fields: {missing_fields}")
+                #print(f"Card is not complete - missing fields: {missing_fields}")
         
         # Report if we stopped due to max retries with fields still missing
         context_tokens, runs = build_fim_prompt_for_inference(card)

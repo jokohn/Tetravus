@@ -49,22 +49,24 @@ def get_available_fields(card):
     return fields
 
 
-# Weights for sampling k (number of fields to mask): favor 5-6, occasionally 2-4 or 7-9.
-# Index i corresponds to k = 2 + i (so k=2..9 for 8 weights).
-K_SAMPLE_WEIGHTS = [1, 2, 4, 6, 6, 4, 2, 1]
+# Weight for k values that yield 1, 2, or 3 unmasked fields (rest go in FIM section).
+WEIGHT_FAVORED_UNMASKED = 4
+WEIGHT_OTHER = 1
 
 
 def sample_k_for_fim(num_fields):
     """
     Sample k (number of fields to mask) with 1 < k < num_fields.
-    Distribution favors 5 and 6 when num_fields is large enough.
+    Favors k such that num_unmasked = num_fields - k is 1, 2, or 3 (most fields in FIM).
     """
     if num_fields <= 2:
         return None  # cannot satisfy 1 < k < n
-    valid_k = list(range(2, num_fields))
-    # Use first (num_fields - 2) weights
-    w = K_SAMPLE_WEIGHTS[: len(valid_k)]
-    return random.choices(valid_k, weights=w, k=1)[0]
+    valid_k = list(range(1, num_fields))
+    weights = [
+        WEIGHT_FAVORED_UNMASKED if (num_fields - k) in (1, 2, 3) else WEIGHT_OTHER
+        for k in valid_k
+    ]
+    return random.choices(valid_k, weights=weights, k=1)[0]
 
 
 def tokenize_card_file_fim(

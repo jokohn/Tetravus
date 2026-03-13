@@ -123,3 +123,14 @@ class Card:
                 missing_fields.append('loyalty')
         return len(missing_fields) == 0, missing_fields
 
+    def needs_creature_stats(self):
+        type_line = self.type_line or ""
+        if 'Creature' in type_line or 'Vehicle' in type_line or 'Spacecraft' in type_line:
+            return True
+        return False
+
+    def needs_planeswalker_loyalty(self):
+        type_line = self.type_line or ""
+        if 'Planeswalker' in type_line:
+            return True
+        return False

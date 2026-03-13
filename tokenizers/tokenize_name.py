@@ -19,7 +19,8 @@ def detokenize_name(token_stream):
             name.append(current_token.replace('<name_char_', '').replace('>', ''))
             current_token = token_stream.consume_token()
         elif current_token == begin_name_token:
-            # The model seems to regularly insert name tokens into name blocks, so we skip them
+            # The model seems to regularly insert name tokens where "r" should go, so we skip them
+            name.append('r')
             current_token = token_stream.consume_token()
         else:
             raise ValueError(f"Malformed token stream: unexpected token {current_token!r} in name block")
