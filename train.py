@@ -3,10 +3,13 @@ import copy
 import datetime
 import json
 import math
+import os
+import time
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from torch.optim.lr_scheduler import CosineAnnealingLR
+
+GRAD_CLIP_MAX_NORM = 1.0
 
 
 def load_text_token_file(file_path):
@@ -85,19 +88,67 @@ class RotaryEmbedding(nn.Module):
 
 
 @torch.no_grad()
-def estimate_loss(model, train_data, val_data, batch_size, block_size, eval_iters, device):
-    """Estimate loss on train and validation sets."""
+def estimate_loss_stats(model, train_data, val_data, batch_size, block_size, eval_iters, device):
+    """Estimate mean/std loss on train and validation sets (eval_iters batches each)."""
     out = {}
     model.eval()
     for split, data in [('train', train_data), ('val', val_data)]:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(data, batch_size, block_size, device)
-            logits, loss = model(X, Y)
+            _, loss = model(X, Y)
             losses[k] = loss.item()
-        out[split] = losses.mean()
+        out[f'{split}_mean'] = losses.mean().item()
+        out[f'{split}_std'] = losses.std(unbiased=False).item()
     model.train()
     return out
+
+
+@torch.no_grad()
+def val_distribution_metrics(model, val_data, batch_size, block_size, device, n_batches=8):
+    """Mean softmax entropy, top-1 and top-5 token accuracy on random val batches."""
+    model.eval()
+    entropies = []
+    top1_hits = []
+    top5_hits = []
+    for _ in range(n_batches):
+        X, Y = get_batch(val_data, batch_size, block_size, device)
+        logits, _ = model(X, Y)
+        probs = F.softmax(logits, dim=-1)
+        ent = -(probs * (probs + 1e-12).log()).sum(dim=-1)
+        entropies.append(ent.mean().item())
+        pred1 = logits.argmax(dim=-1)
+        top1_hits.append((pred1 == Y.view(-1)).float().mean().item())
+        _, top5 = torch.topk(logits, min(5, logits.size(-1)), dim=-1)
+        y_exp = Y.view(-1, 1)
+        top5_hits.append((top5 == y_exp).any(dim=-1).float().mean().item())
+    model.train()
+    return {
+        'val_mean_entropy': sum(entropies) / len(entropies),
+        'val_top1_acc': sum(top1_hits) / len(top1_hits),
+        'val_top5_acc': sum(top5_hits) / len(top5_hits),
+    }
+
+
+def _window_stats(values):
+    if not values:
+        return None
+    return {
+        'mean': sum(values) / len(values),
+        'min': min(values),
+        'max': max(values),
+    }
+
+
+def _write_json(path, obj):
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, indent=2)
+        f.write('\n')
+
+
+def _append_jsonl(path, obj):
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + '\n')
 
 
 class Head(nn.Module):
@@ -409,6 +460,13 @@ def main():
         default=500,
         help='Number of steps for linear warmup (default: 500)'
     )
+    parser.add_argument(
+        '--train-run-log-dir',
+        type=str,
+        default=None,
+        help='Directory for run_manifest.json, eval_events.jsonl, run_summary.json, generations/ '
+             '(default: <output_model_stem>_train_run next to the output model file)'
+    )
     args = parser.parse_args()
     
     # Set random seed
@@ -417,6 +475,19 @@ def main():
     # Set device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
+    if device == 'cuda':
+        torch.cuda.reset_peak_memory_stats()
+
+    out_dir = os.path.dirname(os.path.abspath(args.output_model))
+    out_stem = os.path.splitext(os.path.basename(args.output_model))[0]
+    train_run_log_dir = args.train_run_log_dir
+    if train_run_log_dir is None:
+        train_run_log_dir = os.path.join(out_dir or '.', f'{out_stem}_train_run')
+    os.makedirs(train_run_log_dir, exist_ok=True)
+    generations_dir = os.path.join(train_run_log_dir, 'generations')
+    os.makedirs(generations_dir, exist_ok=True)
+    eval_jsonl_path = os.path.join(train_run_log_dir, 'eval_events.jsonl')
+    open(eval_jsonl_path, 'w', encoding='utf-8').close()
     
     # Load token map
     print(f"Loading token map from {args.token_map}...")
@@ -451,8 +522,65 @@ def main():
     model = model.to(device)
     
     # Print number of parameters
-    num_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"{num_params:.2f}M parameters")
+    num_params_total = sum(p.numel() for p in model.parameters())
+    num_params_m = num_params_total / 1e6
+    emb_params = model.token_embedding_table.weight.numel()
+    num_params_non_embedding = num_params_total - emb_params
+    print(f"{num_params_m:.2f}M parameters")
+
+    cuda_name = None
+    if device == 'cuda' and torch.cuda.is_available():
+        cuda_name = torch.cuda.get_device_name(0)
+
+    manifest = {
+        'type': 'train_run_manifest',
+        'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        'train_run_log_dir': os.path.abspath(train_run_log_dir),
+        'hyperparameters': {
+            'train_file': args.train_file,
+            'test_file': args.test_file,
+            'token_map': args.token_map,
+            'output_model': args.output_model,
+            'batch_size': args.batch_size,
+            'block_size': args.block_size,
+            'max_iters': args.max_iters,
+            'eval_interval': args.eval_interval,
+            'eval_iters': args.eval_iters,
+            'learning_rate': args.learning_rate,
+            'warmup_steps': args.warmup_steps,
+            'min_lr': args.min_lr,
+            'weight_decay': args.weight_decay,
+            'label_smoothing': args.label_smoothing,
+            'dropout': args.dropout,
+            'n_layer': args.n_layer,
+            'n_head': args.n_head,
+            'n_embd': args.n_embd,
+            'early_stop_patience': args.early_stop_patience,
+            'seed': args.seed,
+            'grad_clip_max_norm': GRAD_CLIP_MAX_NORM,
+        },
+        'data': {
+            'train_file': args.train_file,
+            'test_file': args.test_file,
+            'train_num_tokens': int(len(train_data)),
+            'val_num_tokens': int(len(val_data)),
+            'vocab_size': vocab_size,
+            'tokens_per_optimizer_step': args.batch_size * args.block_size,
+        },
+        'model': {
+            'num_parameters_total': num_params_total,
+            'num_parameters_non_embedding': num_params_non_embedding,
+            'num_parameters_millions': round(num_params_m, 6),
+        },
+        'environment': {
+            'torch_version': torch.__version__,
+            'cuda_available': torch.cuda.is_available(),
+            'device': device,
+            'cuda_device_name': cuda_name,
+        },
+    }
+    _write_json(os.path.join(train_run_log_dir, 'run_manifest.json'), manifest)
+    print(f"Training observability: manifest -> {os.path.join(train_run_log_dir, 'run_manifest.json')}")
     
     param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
     
@@ -467,57 +595,169 @@ def main():
     
     # Early stopping tracking variables
     best_val_loss = float('inf')
+    best_step = 0
     patience_counter = 0
     best_model_state = None
     early_stopped = False
-    
+
+    train_run_start = time.perf_counter()
+    last_eval_wall = train_run_start
+    last_eval_step = -1
+    window_train_losses = []
+    window_grad_norms = []
+
     # Training loop
     print(f"Starting training for {args.max_iters} iterations...")
+    print(f"Eval / manifest logs: {eval_jsonl_path}")
+    iter = -1
     for iter in range(args.max_iters):
-        # Evaluate loss periodically
         lr = get_lr(iter, args.warmup_steps, args.max_iters, args.learning_rate, args.min_lr)
         for param_group in optimizer.param_groups:
             param_group['lr'] = lr
         if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
-            losses = estimate_loss(
+            wall_now = time.perf_counter()
+            wall_time_sec = wall_now - train_run_start
+
+            stats = estimate_loss_stats(
                 model, train_data, val_data,
                 args.batch_size, args.block_size,
                 args.eval_iters, device
             )
-            print(f"step {iter}, time {str(datetime.datetime.now())}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, lr {lr:.6f}")
-            
-            # Early stopping logic
-            if losses['val'] < best_val_loss:
-                best_val_loss = losses['val']
+            train_m = stats['train_mean']
+            train_s = stats['train_std']
+            val_m = stats['val_mean']
+            val_s = stats['val_std']
+
+            dist = val_distribution_metrics(
+                model, val_data, args.batch_size, args.block_size, device
+            )
+
+            peak_cuda = None
+            if device == 'cuda':
+                peak_cuda = int(torch.cuda.max_memory_allocated())
+                torch.cuda.reset_peak_memory_stats()
+
+            ws_train = _window_stats(window_train_losses)
+            ws_grad = _window_stats(window_grad_norms)
+            if window_grad_norms:
+                clipped_frac = sum(1 for g in window_grad_norms if g > GRAD_CLIP_MAX_NORM) / len(window_grad_norms)
+            else:
+                clipped_frac = None
+
+            if last_eval_step >= 0:
+                steps_since = iter - last_eval_step
+                elapsed_seg = wall_now - last_eval_wall
+                steps_per_sec = steps_since / elapsed_seg if elapsed_seg > 0 else None
+                tokens_per_sec = (
+                    steps_per_sec * args.batch_size * args.block_size
+                    if steps_per_sec is not None else None
+                )
+            else:
+                steps_per_sec = None
+                tokens_per_sec = None
+
+            print(
+                f"step {iter}, time {str(datetime.datetime.now())}: "
+                f"train loss {train_m:.4f} (std {train_s:.4f}), val loss {val_m:.4f} (std {val_s:.4f}), lr {lr:.6f}"
+            )
+
+            if val_m < best_val_loss:
+                best_val_loss = val_m
                 patience_counter = 0
                 best_model_state = copy.deepcopy(model.state_dict())
+                best_step = iter
                 print(f"  -> New best validation loss: {best_val_loss:.4f}")
             else:
                 patience_counter += 1
                 print(f"  -> No improvement ({patience_counter}/{args.early_stop_patience})")
-            
-            # Check for early stopping
-            if patience_counter >= args.early_stop_patience:
+
+            will_break = patience_counter >= args.early_stop_patience
+
+            gen_rel = None
+            gen_temperature = 1.0
+            gen_top_k = 50
+            if not will_break:
+                context = torch.zeros((1, 1), dtype=torch.long, device=device)
+                generated_ids = model.generate(
+                    context, max_new_tokens=50, block_size=args.block_size,
+                    temperature=gen_temperature, top_k=gen_top_k
+                )[0].tolist()
+                generated_tokens = [decoder.get(token_id, f"<UNK_{token_id}>") for token_id in generated_ids]
+                generated_text = ''.join(generated_tokens)
+                print(generated_text)
+                gen_path = os.path.join(generations_dir, f'step_{iter}.txt')
+                with open(gen_path, 'w', encoding='utf-8') as f:
+                    f.write(generated_text)
+                gen_rel = os.path.relpath(gen_path, train_run_log_dir)
+
+            eval_event = {
+                'type': 'eval',
+                'step': iter,
+                'wall_time_sec': round(wall_time_sec, 4),
+                'train_loss_mean': train_m,
+                'train_loss_std': train_s,
+                'val_loss_mean': val_m,
+                'val_loss_std': val_s,
+                'train_ppl': math.exp(train_m),
+                'val_ppl': math.exp(val_m),
+                'lr': lr,
+                'best_val_so_far': best_val_loss,
+                'best_step': best_step,
+                'patience_counter': patience_counter,
+                'train_val_gap': train_m - val_m,
+                'val_mean_entropy': dist['val_mean_entropy'],
+                'val_top1_acc': dist['val_top1_acc'],
+                'val_top5_acc': dist['val_top5_acc'],
+                'window_train_loss_mean': ws_train['mean'] if ws_train else None,
+                'window_train_loss_min': ws_train['min'] if ws_train else None,
+                'window_train_loss_max': ws_train['max'] if ws_train else None,
+                'window_grad_norm_mean': ws_grad['mean'] if ws_grad else None,
+                'window_grad_norm_max': ws_grad['max'] if ws_grad else None,
+                'window_grad_clipped_frac': round(clipped_frac, 6) if clipped_frac is not None else None,
+                'steps_per_sec_since_last_eval': round(steps_per_sec, 4) if steps_per_sec is not None else None,
+                'tokens_per_sec_since_last_eval': round(tokens_per_sec, 2) if tokens_per_sec is not None else None,
+                'peak_cuda_mem_bytes': peak_cuda,
+                'generation_sample_relpath': gen_rel,
+                'generation_temperature': gen_temperature if gen_rel else None,
+                'generation_top_k': gen_top_k if gen_rel else None,
+            }
+            _append_jsonl(eval_jsonl_path, eval_event)
+
+            window_train_losses.clear()
+            window_grad_norms.clear()
+            last_eval_wall = wall_now
+            last_eval_step = iter
+
+            if will_break:
                 print(f"\nEarly stopping triggered after {iter} iterations (patience: {args.early_stop_patience})")
                 early_stopped = True
                 break
-            
-            context = torch.zeros((1, 1), dtype=torch.long, device=device)
-            generated_ids = model.generate(context, max_new_tokens=50, block_size=args.block_size, temperature=1.0, top_k=50)[0].tolist()
-            generated_tokens = [decoder.get(token_id, f"<UNK_{token_id}>") for token_id in generated_ids]
-            generated_text = ''.join(generated_tokens)
-            print(generated_text)
-        
-        # Sample a batch of data
+
         xb, yb = get_batch(train_data, args.batch_size, args.block_size, device)
-        
-        # Evaluate the loss
         logits, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=GRAD_CLIP_MAX_NORM).item()
         optimizer.step()
-    
+        window_train_losses.append(loss.item())
+        window_grad_norms.append(grad_norm)
+
+    total_wall_time_sec = time.perf_counter() - train_run_start
+    final_step = iter
+    run_summary = {
+        'type': 'train_run_summary',
+        'early_stopped': early_stopped,
+        'final_step': final_step,
+        'best_step': best_step,
+        'best_val_loss': best_val_loss if best_val_loss != float('inf') else None,
+        'total_wall_time_sec': round(total_wall_time_sec, 4),
+        'restored_best_checkpoint': best_model_state is not None,
+        'max_iters': args.max_iters,
+    }
+    summary_path = os.path.join(train_run_log_dir, 'run_summary.json')
+    _write_json(summary_path, run_summary)
+    print(f"Training observability: summary -> {summary_path}")
+
     # Restore best model if early stopping occurred or if we have a best model state
     if best_model_state is not None:
         print(f"\nRestoring best model with validation loss: {best_val_loss:.4f}")
