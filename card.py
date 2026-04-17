@@ -134,3 +134,20 @@ class Card:
         if 'Planeswalker' in type_line:
             return True
         return False
+
+    def __str__(self):
+        lines = []
+        lines.append("Card(")
+        lines.append(f"  name={repr(self.name)},")
+        lines.append(f"  mana_cost={repr(self.mana_cost)},")
+        lines.append(f"  type_line={repr(self.type_line)},")
+        lines.append(f"  oracle_text={repr(self.oracle_text)},")
+        lines.append(f"  release_year={repr(self.release_year)},")
+        lines.append(f"  rarity={repr(self.rarity)},")
+        lines.append(f"  set_code={repr(self.set_code)},")
+        lines.append(f"  power={repr(self.power)},")
+        lines.append(f"  toughness={repr(self.toughness)},")
+        lines.append(f"  loyalty={repr(self.loyalty)}")
+        lines.append(")")
+        return "\n".join(lines)
+   

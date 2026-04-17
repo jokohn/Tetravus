@@ -56,7 +56,7 @@ def detokenize_oracle_text(token_stream, card_name=None):
         elif current_token == oracle_text_this_card_token:
             oracle_text.append(card_name)
         elif current_token == oracle_text_other_card_token:
-            oracle_text.append('ANOTHER_CARD_NAME')
+            oracle_text.append(oracle_text_other_card_token)
         elif current_token == oracle_text_open_quote_token:
             oracle_text.append(current_token)
         elif current_token == oracle_text_close_quote_token:

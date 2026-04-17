@@ -3,13 +3,25 @@ Utilities for Fill-In-The-Middle (FIM) card tokenization.
 Canonical field order and helpers for FIM block construction.
 """
 
+import sys
+from dataclasses import dataclass
+
 from special_tokens import (
     begin_card_token,
     end_card_token,
+    end_mana_cost_token,
+    end_name_token,
+    end_oracle_text_token,
+    end_type_line_token,
     fim_begin_token,
     fim_end_token,
     sentinel_tokens,
 )
+
+from tokenizers.tokenize_mana_cost import tokenize_mana_cost
+from tokenizers.tokenize_name import tokenize_name
+from tokenizers.tokenize_oracle_text import tokenize_oracle_text
+from tokenizers.tokenize_type_line import tokenize_type_line
 
 # Fixed order for all card fields (standard and FIM mode).
 # Optional fields (power, toughness, loyalty) are included only when present on the card.
@@ -209,3 +221,238 @@ def build_fim_prompt_for_inference(partial_card):
         + [fim_end_token, sentinel_tokens[0]]
     )
     return (prompt_tokens, runs)
+
+
+# Fields where user-facing "..." can open a real token prefix (begin tag + content, no end tag).
+_FIELDS_WITH_OPEN_PREFIX = frozenset(
+    {"name", "mana_cost", "type_line", "oracle_text"}
+)
+
+
+def parse_field_value_for_inference(field_name, raw):
+    """
+    Interpret optional inference ellipsis in user-provided field strings.
+
+    Valid: exactly "...", or any string that ends with "..." whose prefix does not
+    contain "..." (single trailing completion marker).
+
+    Returns:
+        (stored_value, wants_partial_completion, malformed_treat_as_literal)
+        - stored_value: str to store on Card (prefix after stripping marker), or None
+        - wants_partial_completion: True if model should continue inside this field's block
+        - malformed_treat_as_literal: True if "..." rules were violated; caller should keep raw string
+    """
+    if raw is None:
+        return (None, False, False)
+    if "..." not in raw:
+        return (raw, False, False)
+    if raw == "...":
+        if field_name not in _FIELDS_WITH_OPEN_PREFIX:
+            return (None, False, False)
+        # Store None on Card; partial_fields marks the open block to complete
+        return (None, True, False)
+    if raw.endswith("..."):
+        prefix = raw[:-3]
+        if "..." in prefix:
+            return (raw, False, True)
+        if field_name not in _FIELDS_WITH_OPEN_PREFIX:
+            return (raw, False, True)
+        return (prefix, True, False)
+    return (raw, False, True)
+
+
+def normalize_inference_string_field(field_name, raw, warn_fn=None):
+    """
+    Apply parse_field_value_for_inference; on malformed, optionally warn and return literal raw.
+    """
+    stored, partial, malformed = parse_field_value_for_inference(field_name, raw)
+    if malformed and warn_fn is not None:
+        warn_fn(
+            f"Inference: field {field_name!r} has invalid use of '...' (only a lone '...' or "
+            f"a single trailing '...' after text with no '...' in the prefix is allowed). "
+            f"Treating value as literal."
+        )
+    if malformed:
+        return (raw, False)
+    return (stored, partial)
+
+
+def _field_applies_in_inference_order(card, field_name):
+    """Whether this canonical field participates in ordering for this card."""
+    return field_name in get_canonical_fields_for_card(card)
+
+
+def _field_is_gap(card, field_name, partial_fields):
+    if not _field_applies_in_inference_order(card, field_name):
+        return False
+    if field_name in partial_fields:
+        return True
+    return not _card_has_field(card, field_name)
+
+
+def find_leftmost_inference_gap(card, partial_fields):
+    """
+    First canonical field that still needs model work (missing or partial ellipsis).
+    Returns field name or None if none.
+    """
+    for f in CANONICAL_FIELD_ORDER:
+        if _field_is_gap(card, f, partial_fields):
+            return f
+    return None
+
+
+def _closed_field_tokens(card, field_name):
+    return card.generate_tokens([field_name])
+
+
+def open_field_prefix_tokens(card, field_name):
+    """Tokens for an incomplete field block: begin tag through content, no end tag."""
+
+
+    if field_name == "name":
+        toks = tokenize_name(card.name or "")
+        return toks[:-1] if toks and toks[-1] == end_name_token else toks
+    if field_name == "mana_cost":
+        toks = tokenize_mana_cost(card.mana_cost or "")
+        return toks[:-1] if toks and toks[-1] == end_mana_cost_token else toks
+    if field_name == "type_line":
+        toks = tokenize_type_line(card.type_line or "")
+        return toks[:-1] if toks and toks[-1] == end_type_line_token else toks
+    if field_name == "oracle_text":
+        toks = tokenize_oracle_text(
+            card.oracle_text or "",
+            card.name,
+            card.type_line,
+            card.related_card_names,
+        )
+        return toks[:-1] if toks and toks[-1] == end_oracle_text_token else toks
+    raise ValueError(f"Open prefix not supported for field {field_name!r}")
+
+
+FIELD_END_TAG = {
+    "name": end_name_token,
+    "mana_cost": end_mana_cost_token,
+    "type_line": end_type_line_token,
+    "oracle_text": end_oracle_text_token,
+}
+
+
+@dataclass
+class InferencePromptPlan:
+    prompt_tokens: list
+    parse_mode: str  # "fim_sentinel_tail" | "continue_open_field" | "complete_card"
+    runs: list  # for FIM: list of lists of field names; empty if not FIM
+    open_field: str | None  # for continue_open_field
+    end_tag: str | None
+
+
+def build_inference_prompt_for_leftmost_gap(card, partial_fields):
+    """
+    One generate+parse round: context ends where the model should continue.
+
+    Returns InferencePromptPlan with parse_mode:
+    - complete_card: no gaps; full <card>...</card> (no generation required for filling)
+    - continue_open_field: open_field + end_tag set
+    - fim_sentinel_tail: runs possibly non-empty
+    """
+    gap = find_leftmost_inference_gap(card, partial_fields)
+    if gap is None:
+        fields = get_canonical_fields_for_card(card)
+        tokens = (
+            [begin_card_token]
+            + card.generate_tokens(fields)
+            + [end_card_token]
+        )
+        return InferencePromptPlan(
+            prompt_tokens=tokens,
+            parse_mode="complete_card",
+            runs=[],
+            open_field=None,
+            end_tag=None,
+        )
+
+    # Closed complete blocks for all applicable fields strictly before `gap`
+    prefix_tokens = [begin_card_token]
+    for f in CANONICAL_FIELD_ORDER:
+        if f == gap:
+            break
+        if not _field_applies_in_inference_order(card, f):
+            continue
+        if _field_is_gap(card, f, partial_fields):
+            # Should not happen if gap is leftmost
+            continue
+        prefix_tokens.extend(_closed_field_tokens(card, f))
+
+    if gap in partial_fields:
+        prefix_tokens.extend(open_field_prefix_tokens(card, gap))
+        return InferencePromptPlan(
+            prompt_tokens=prefix_tokens,
+            parse_mode="continue_open_field",
+            runs=[],
+            open_field=gap,
+            end_tag=FIELD_END_TAG[gap],
+        )
+
+    # First gap is fully missing: scoped FIM body from `gap` onward
+    idx_gap = CANONICAL_FIELD_ORDER.index(gap)
+    missing_run = []
+    for j in range(idx_gap, len(CANONICAL_FIELD_ORDER)):
+        f = CANONICAL_FIELD_ORDER[j]
+        if not _field_applies_in_inference_order(card, f):
+            continue
+        if not _card_has_field(card, f) and f not in partial_fields:
+            missing_run.append(f)
+        else:
+            break
+
+    if not missing_run:
+        raise ValueError(f"Inference gap at {gap!r} but no missing run computed")
+
+    runs = _compute_runs(CANONICAL_FIELD_ORDER, set(missing_run))
+    first_run = runs[0] if runs else missing_run
+    runs = [first_run]
+
+    if len(runs[0]) > len(sentinel_tokens):
+        print(
+            f"Warning: inference missing run needs more than {len(sentinel_tokens)} sentinels; truncating.",
+            file=sys.stderr,
+        )
+        runs = [runs[0][: len(sentinel_tokens)]]
+
+    missing_set = set(runs[0])
+    body = []
+    run_index = 0
+    in_run = False
+    seen_end_of_missing_run = False
+    for f in CANONICAL_FIELD_ORDER[idx_gap:]:
+        if not _field_applies_in_inference_order(card, f):
+            continue
+        if f in missing_set:
+            if seen_end_of_missing_run:
+                break
+            if not in_run:
+                body.append(sentinel_tokens[run_index])
+                run_index += 1
+                in_run = True
+        else:
+            if in_run:
+                seen_end_of_missing_run = True
+                in_run = False
+            if seen_end_of_missing_run:
+                if _field_is_gap(card, f, partial_fields):
+                    break
+                body.extend(_closed_field_tokens(card, f))
+
+    prompt_tokens = (
+        prefix_tokens
+        + [fim_begin_token]
+        + body
+        + [fim_end_token, sentinel_tokens[0]]
+    )
+    return InferencePromptPlan(
+        prompt_tokens=prompt_tokens,
+        parse_mode="fim_sentinel_tail",
+        runs=runs,
+        open_field=None,
+        end_tag=None,
+    )

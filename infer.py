@@ -23,7 +23,14 @@ from special_tokens import (
     begin_type_line_token, end_type_line_token,
     fim_begin_token, fim_end_token, sentinel_tokens,
 )
-from fim_utils import build_fim_prompt_for_inference
+from fim_utils import (
+    build_inference_prompt_for_leftmost_gap,
+    find_leftmost_inference_gap,
+    get_canonical_fields_for_card,
+    normalize_inference_string_field,
+    open_field_prefix_tokens,
+    FIELD_END_TAG,
+)
 
 def load_model_and_token_map(model_path, token_map_path, device):
     """
@@ -219,24 +226,180 @@ def create_card_from_args(args):
     Returns:
         Card object with provided fields, None for missing fields
     """
-    return Card(
-        name=args.name,
-        oracle_text=args.oracle_text,
-        mana_cost=args.mana_cost,
-        type_line=args.type_line,
-        release_year=args.release_year,
-        rarity=args.rarity,
-        set_name=args.set,
-        power=args.power,
-        toughness=args.toughness,
-        loyalty=args.loyalty
+    card, _ = create_inference_card_from_args(args)
+    return card
+
+
+def _inference_warn(msg):
+    print(msg, file=sys.stderr)
+
+
+def create_inference_card_from_args(args):
+    """
+    Build Card from CLI args and track fields that end with the inference '...' convention.
+
+    Returns:
+        (card, partial_fields) where partial_fields is a set of canonical field names
+        still needing in-block completion.
+    """
+    partial_fields = set()
+
+    def norm(field_name, raw):
+        if raw is None:
+            return None
+        stored, is_partial = normalize_inference_string_field(
+            field_name, raw, warn_fn=_inference_warn
+        )
+        if is_partial:
+            partial_fields.add(field_name)
+        return stored
+
+    card = Card(
+        name=norm("name", args.name),
+        oracle_text=norm("oracle_text", args.oracle_text),
+        mana_cost=norm("mana_cost", args.mana_cost),
+        type_line=norm("type_line", args.type_line),
+        release_year=norm("release_year", args.release_year),
+        rarity=norm("rarity", args.rarity),
+        set_name=norm("set", args.set),
+        power=norm("power", args.power),
+        toughness=norm("toughness", args.toughness),
+        loyalty=norm("loyalty", args.loyalty),
     )
+    return card, partial_fields
+
+
+def inference_is_complete(card, partial_fields):
+    """True when required fields are filled and no ellipsis-partial fields remain."""
+    ok, _ = card.is_complete()
+    return ok and len(partial_fields) == 0
+
+
+def merge_open_field_completion(card, open_field, prefix_token_list, generated_token_strings):
+    """
+    Parse tokens for one open field: prefix (already in context) + generated suffix through end tag.
+    Updates card in place; removes open_field from completion needs on success.
+
+    Returns:
+        True if end tag was found and the field parsed; False otherwise.
+    """
+    end_tag = FIELD_END_TAG[open_field]
+    end_i = None
+    for i, t in enumerate(generated_token_strings):
+        if t == end_tag:
+            end_i = i
+            break
+    if end_i is None:
+        return False
+    chunk = prefix_token_list + generated_token_strings[: end_i + 1]
+    stream = TokenStream(chunk)
+    try:
+        if open_field == "name":
+            card.name = detokenize_name(stream)
+        elif open_field == "mana_cost":
+            card.mana_cost = detokenize_mana_cost(stream)
+        elif open_field == "type_line":
+            card.type_line = detokenize_type_line(stream)
+        elif open_field == "oracle_text":
+            card.oracle_text = detokenize_oracle_text(stream, card_name=card.name)
+        else:
+            return False
+    except (ValueError, IndexError):
+        return False
+    return True
+
+
+def _token_matches_expected_field_start(token, field_name):
+    if field_name == "name":
+        return token == begin_name_token
+    if field_name == "mana_cost":
+        return token == begin_mana_cost_token
+    if field_name == "type_line":
+        return token == begin_type_line_token
+    if field_name == "oracle_text":
+        return token == begin_oracle_text_token
+    if field_name == "release_year":
+        return token.startswith("<release_year_")
+    if field_name == "rarity":
+        return token.startswith("<rarity_")
+    if field_name == "set":
+        return token.startswith("<set_")
+    if field_name == "power":
+        return token.startswith("<power_")
+    if field_name == "toughness":
+        return token.startswith("<toughness_")
+    if field_name == "loyalty":
+        return token.startswith("<loyalty_")
+    return False
+
+
+def _skip_extraneous_field_block(stream, card):
+    """
+    If the stream starts with a full card field block, consume it without updating card.
+    Used when the model echoes context fields before the gap content we need to parse.
+    Returns True if something was consumed.
+    """
+    if not stream.has_next():
+        return False
+    p = stream.peek()
+    try:
+        if p == begin_name_token:
+            detokenize_name(stream)
+            return True
+        if p == begin_mana_cost_token:
+            detokenize_mana_cost(stream)
+            return True
+        if p == begin_type_line_token:
+            detokenize_type_line(stream)
+            return True
+        if p == begin_oracle_text_token:
+            detokenize_oracle_text(stream, card_name=card.name)
+            return True
+        if p.startswith("<release_year_"):
+            detokenize_release_year(stream)
+            return True
+        if p.startswith("<rarity_"):
+            detokenize_rarity(stream)
+            return True
+        if p.startswith("<set_"):
+            detokenize_set_name(stream)
+            return True
+        if p.startswith("<power_"):
+            detokenize_power(stream)
+            return True
+        if p.startswith("<toughness_"):
+            detokenize_toughness(stream)
+            return True
+        if p.startswith("<loyalty_"):
+            detokenize_loyalty(stream)
+            return True
+        if p in (begin_card_token, end_card_token, fim_begin_token, fim_end_token):
+            stream.advance()
+            return True
+        if p in sentinel_tokens:
+            stream.advance()
+            return True
+    except (ValueError, IndexError):
+        return False
+    return False
+
+
+def _sync_stream_to_next_field(stream, field_name, card, max_steps):
+    """Advance past echoed field blocks until peek matches the expected field opener or stream ends."""
+    steps = 0
+    while stream.has_next() and not _token_matches_expected_field_start(stream.peek(), field_name):
+        if not _skip_extraneous_field_block(stream, card):
+            break
+        steps += 1
+        if steps > max_steps:
+            break
 
 
 def _parse_chunk_into_fields(chunk_tokens, field_names, card):
     """
     Try to parse a chunk of tokens as a sequence of fields (e.g. one run).
     For each field name in order, attempt to detokenize and set on card.
+    The model may prefix the chunk with fields already present in context; those are skipped.
     Stops on first parse failure or when stream is consumed.
 
     Returns:
@@ -245,45 +408,64 @@ def _parse_chunk_into_fields(chunk_tokens, field_names, card):
     if not chunk_tokens or not field_names:
         return 0
     stream = TokenStream(chunk_tokens)
+    max_sync_steps = max(len(chunk_tokens), 1)
     parsed = 0
     for field_name in field_names:
+        if field_name == "power" and not card.needs_creature_stats():
+            if stream.has_next() and stream.peek().startswith("<power_"):
+                try:
+                    detokenize_power(stream)
+                except (ValueError, IndexError):
+                    break
+            continue
+        if field_name == "toughness" and not card.needs_creature_stats():
+            if stream.has_next() and stream.peek().startswith("<toughness_"):
+                try:
+                    detokenize_toughness(stream)
+                except (ValueError, IndexError):
+                    break
+            continue
+        if field_name == "loyalty" and not card.needs_planeswalker_loyalty():
+            if stream.has_next() and stream.peek().startswith("<loyalty_"):
+                try:
+                    detokenize_loyalty(stream)
+                except (ValueError, IndexError):
+                    break
+            continue
         if not stream.has_next():
             break
+        _sync_stream_to_next_field(stream, field_name, card, max_sync_steps)
+        if not stream.has_next() or not _token_matches_expected_field_start(stream.peek(), field_name):
+            break
         try:
-            if field_name == "power" and not card.needs_creature_stats():
-                continue
-            if field_name == "toughness" and not card.needs_creature_stats():
-                continue
-            if field_name == "loyalty" and not card.needs_planeswalker_loyalty():
-                continue
-            if field_name == "name" and stream.peek() == begin_name_token:
+            if field_name == "name":
                 card.name = detokenize_name(stream)
                 parsed += 1
-            elif field_name == "mana_cost" and stream.peek() == begin_mana_cost_token:
+            elif field_name == "mana_cost":
                 card.mana_cost = detokenize_mana_cost(stream)
                 parsed += 1
-            elif field_name == "type_line" and stream.peek() == begin_type_line_token:
+            elif field_name == "type_line":
                 card.type_line = detokenize_type_line(stream)
                 parsed += 1
-            elif field_name == "oracle_text" and stream.peek() == begin_oracle_text_token:
+            elif field_name == "oracle_text":
                 card.oracle_text = detokenize_oracle_text(stream, card_name=card.name)
                 parsed += 1
-            elif field_name == "release_year" and stream.peek().startswith("<release_year_"):
+            elif field_name == "release_year":
                 card.release_year = detokenize_release_year(stream)
                 parsed += 1
-            elif field_name == "rarity" and stream.peek().startswith("<rarity_"):
+            elif field_name == "rarity":
                 card.rarity = detokenize_rarity(stream)
                 parsed += 1
-            elif field_name == "set" and stream.peek().startswith("<set_"):
+            elif field_name == "set":
                 card.set_code = detokenize_set_name(stream)
                 parsed += 1
-            elif field_name == "power" and stream.peek().startswith("<power_"):
+            elif field_name == "power":
                 card.power = detokenize_power(stream)
                 parsed += 1
-            elif field_name == "toughness" and stream.peek().startswith("<toughness_"):
+            elif field_name == "toughness":
                 card.toughness = detokenize_toughness(stream)
                 parsed += 1
-            elif field_name == "loyalty" and stream.peek().startswith("<loyalty_"):
+            elif field_name == "loyalty":
                 card.loyalty = detokenize_loyalty(stream)
                 parsed += 1
             else:
@@ -327,7 +509,7 @@ def parse_generated_sentinel_tail(generated_tokens, runs, card):
 
     Args:
         generated_tokens: List of token strings (model output after prompt)
-        runs: List of lists of field names (from build_fim_prompt_for_inference)
+        runs: List of lists of field names (from build_inference_prompt_for_leftmost_gap / FIM training)
         card: Card to update with parsed fields (modified in place)
     """
     chunks = _split_generated_by_sentinels(generated_tokens)
@@ -604,7 +786,12 @@ def interactive_generation_loop(model, initial_context, token_map, decoder, bloc
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Load a trained model and generate card fields from partial card information."
+        description=(
+            "Load a trained model and generate card fields from partial card information. "
+            "For name, mana cost, type line, and oracle text you may end the value with '...' "
+            "(or pass exactly '...') to let the model finish that field's token block; invalid "
+            "'...' placement is treated as a literal string (see stderr warning)."
+        )
     )
     
     # Required arguments
@@ -626,25 +813,25 @@ def main():
         '--name',
         type=str,
         default=None,
-        help='Card name'
+        help='Card name. Trailing ... or exactly ... completes the name block inside <name>...</name>.',
     )
     parser.add_argument(
         '--oracle-text',
         type=str,
         default=None,
-        help='Oracle text'
+        help='Oracle text. Trailing ... or exactly ... completes the oracle_text block.',
     )
     parser.add_argument(
         '--mana-cost',
         type=str,
         default=None,
-        help='Mana cost (e.g., "{R}{G}{W}")'
+        help='Mana cost (e.g., "{R}{G}{W}"). Trailing ... or exactly ... completes the mana_cost block.',
     )
     parser.add_argument(
         '--type-line',
         type=str,
         default=None,
-        help='Type line (e.g., "Creature — Human Wizard")'
+        help='Type line (e.g., "Creature — Human Wizard"). Trailing ... or exactly ... completes the block.',
     )
     parser.add_argument(
         '--release-year',
@@ -743,44 +930,55 @@ def main():
             args.model, args.token_map, device
         )
         
-        # Create card from arguments
+        # Create card from arguments (including optional '...' in-block completion markers)
         print("\nCreating card from provided fields...")
-        card = create_card_from_args(args)
+        card, partial_fields = create_inference_card_from_args(args)
+        print(card)
         
-        # Show what fields are provided
+        # Show what fields the user passed on the CLI (includes ... markers)
         provided_fields = []
-        if card.name is not None:
+        if args.name is not None:
             provided_fields.append("name")
-        if card.oracle_text is not None:
+        if args.oracle_text is not None:
             provided_fields.append("oracle_text")
-        if card.mana_cost is not None:
+        if args.mana_cost is not None:
             provided_fields.append("mana_cost")
-        if card.type_line is not None:
+        if args.type_line is not None:
             provided_fields.append("type_line")
-        if card.release_year is not None:
+        if args.release_year is not None:
             provided_fields.append("release_year")
-        if card.rarity is not None:
+        if args.rarity is not None:
             provided_fields.append("rarity")
-        if card.set_code is not None:
+        if args.set is not None:
             provided_fields.append("set")
-        if card.power is not None:
+        if args.power is not None:
             provided_fields.append("power")
-        if card.toughness is not None:
+        if args.toughness is not None:
             provided_fields.append("toughness")
-        if card.loyalty is not None:
+        if args.loyalty is not None:
             provided_fields.append("loyalty")
         
         if provided_fields:
             print(f"Provided fields: {', '.join(provided_fields)}")
         else:
             print("No fields provided - generating complete card from scratch")
+        if partial_fields:
+            print(
+                "In-block completion (...): "
+                + ", ".join(sorted(partial_fields))
+            )
         
         # Iterative generate+parse until card is complete or max_retries reached
         round_num = 0
         while round_num < args.max_retries:
-            # Build FIM prompt: missing fields become sentinels; prompt ends with </FIM><sentinel_0>
-            print("\nBuilding FIM context...")
-            context_tokens, runs = build_fim_prompt_for_inference(card)
+            partial_fields.intersection_update(get_canonical_fields_for_card(card))
+            plan = build_inference_prompt_for_leftmost_gap(card, partial_fields)
+            if plan.parse_mode == "complete_card":
+                print("\nNothing left to infer for the current card.")
+                break
+
+            print("\nBuilding inference context...")
+            context_tokens = plan.prompt_tokens
             print(f"Context tokens: {len(context_tokens)} tokens")
             
             round_num += 1
@@ -802,8 +1000,6 @@ def main():
             context = torch.tensor([context_token_ids], dtype=torch.long, device=device)
             print(f"Context length: {context.shape[1]} tokens")
             
-            # Generate tokens (model continues from <sentinel_0> with gap contents, then </card>)
-            #print(f"\nGenerating up to {args.num_tokens} tokens...")
             full_sequence, new_tokens = generate_tokens(
                 model, context, args.num_tokens, block_size, args.temperature, args.top_k, device
             )
@@ -811,23 +1007,36 @@ def main():
             # Decode generated part only (tokens after the prompt)
             all_token_strings = decode_tokens(full_sequence[0], decoder)
             generated_token_strings = all_token_strings[len(context_tokens):]
-            #print(f"{all_token_strings}")
-            
-            # Parse generated tail: split by sentinels, parse each chunk into run fields, merge into card
-            #print("\nParsing generated tokens into card fields...")
-            parse_generated_sentinel_tail(generated_token_strings, runs, card)
 
-            is_complete, missing_fields = card.is_complete()
-            if is_complete:
-                #print(f"Card is complete")
+            if plan.parse_mode == "fim_sentinel_tail":
+                parse_generated_sentinel_tail(generated_token_strings, plan.runs, card)
+            elif plan.parse_mode == "continue_open_field":
+                prefix_toks = open_field_prefix_tokens(card, plan.open_field)
+                merged = merge_open_field_completion(
+                    card, plan.open_field, prefix_toks, generated_token_strings
+                )
+                if merged:
+                    partial_fields.discard(plan.open_field)
+                else:
+                    print(
+                        f"Warning: did not find expected closing tag {plan.end_tag!r} "
+                        f"for field {plan.open_field!r} in this round's generation.",
+                        file=sys.stderr,
+                    )
+
+            if inference_is_complete(card, partial_fields):
                 break
-                #print(f"Card is not complete - missing fields: {missing_fields}")
         
-        # Report if we stopped due to max retries with fields still missing
-        context_tokens, runs = build_fim_prompt_for_inference(card)
-        if runs and round_num >= args.max_retries:
-            missing_count = sum(len(r) for r in runs)
-            print(f"\nStopped after max retries ({args.max_retries}) with {missing_count} field(s) still missing.")
+        if (
+            not inference_is_complete(card, partial_fields)
+            and round_num >= args.max_retries
+        ):
+            nxt = find_leftmost_inference_gap(card, partial_fields)
+            print(
+                f"\nStopped after max retries ({args.max_retries}) with inference still incomplete "
+                f"(next gap: {nxt!r}; partial ellipsis fields: {sorted(partial_fields)}).",
+                file=sys.stderr,
+            )
         
         # Print card (complete or partial)
         print_card(card)
