@@ -1,8 +1,10 @@
 import argparse
+import __main__
 import json
 import os
 import random
 import sys
+import types
 import torch
 
 from train import GPTLanguageModel, Block, MultiHeadAttention, Head, FeedFoward, RotaryEmbedding
@@ -26,11 +28,32 @@ from special_tokens import (
 from fim_utils import (
     build_inference_prompt_for_leftmost_gap,
     find_leftmost_inference_gap,
-    get_canonical_fields_for_card,
+    get_inference_fields_for_card,
     normalize_inference_string_field,
     open_field_prefix_tokens,
     FIELD_END_TAG,
 )
+
+
+def _register_model_symbols_for_torch_load():
+    """
+    Ensure legacy checkpoints that reference classes under __main__ or main can load.
+    """
+    target_modules = [__main__]
+    main_mod = sys.modules.get("main")
+    if main_mod is None:
+        main_mod = types.ModuleType("main")
+        sys.modules["main"] = main_mod
+    target_modules.append(main_mod)
+
+    for mod in target_modules:
+        mod.GPTLanguageModel = GPTLanguageModel
+        mod.Block = Block
+        mod.MultiHeadAttention = MultiHeadAttention
+        mod.Head = Head
+        mod.FeedFoward = FeedFoward
+        mod.RotaryEmbedding = RotaryEmbedding
+
 
 def load_model_and_token_map(model_path, token_map_path, device):
     """
@@ -58,6 +81,7 @@ def load_model_and_token_map(model_path, token_map_path, device):
         vocab_size = len(token_map)
     
     # Load model
+    _register_model_symbols_for_torch_load()
     model = torch.load(model_path, map_location=device, weights_only=False)
     model = model.to(device)
     model.eval()  # Set to evaluation mode
@@ -230,17 +254,26 @@ def create_card_from_args(args):
     return card
 
 
-def _inference_warn(msg):
-    print(msg, file=sys.stderr)
-
-
-def create_inference_card_from_args(args):
+def create_inference_card_from_fields(
+    *,
+    name=None,
+    oracle_text=None,
+    mana_cost=None,
+    type_line=None,
+    release_year=None,
+    rarity=None,
+    set_name=None,
+    power=None,
+    toughness=None,
+    loyalty=None,
+):
     """
-    Build Card from CLI args and track fields that end with the inference '...' convention.
+    Build Card from explicit field values and track fields that end with
+    the inference '...' convention.
 
     Returns:
-        (card, partial_fields) where partial_fields is a set of canonical field names
-        still needing in-block completion.
+        (card, partial_fields) where partial_fields is a set of canonical field
+        names still needing in-block completion.
     """
     partial_fields = set()
 
@@ -255,18 +288,44 @@ def create_inference_card_from_args(args):
         return stored
 
     card = Card(
-        name=norm("name", args.name),
-        oracle_text=norm("oracle_text", args.oracle_text),
-        mana_cost=norm("mana_cost", args.mana_cost),
-        type_line=norm("type_line", args.type_line),
-        release_year=norm("release_year", args.release_year),
-        rarity=norm("rarity", args.rarity),
-        set_name=norm("set", args.set),
-        power=norm("power", args.power),
-        toughness=norm("toughness", args.toughness),
-        loyalty=norm("loyalty", args.loyalty),
+        name=norm("name", name),
+        oracle_text=norm("oracle_text", oracle_text),
+        mana_cost=norm("mana_cost", mana_cost),
+        type_line=norm("type_line", type_line),
+        release_year=norm("release_year", release_year),
+        rarity=norm("rarity", rarity),
+        set_name=norm("set", set_name),
+        power=norm("power", power),
+        toughness=norm("toughness", toughness),
+        loyalty=norm("loyalty", loyalty),
     )
     return card, partial_fields
+
+
+def _inference_warn(msg):
+    print(msg, file=sys.stderr)
+
+
+def create_inference_card_from_args(args):
+    """
+    Build Card from CLI args and track fields that end with the inference '...' convention.
+
+    Returns:
+        (card, partial_fields) where partial_fields is a set of canonical field names
+        still needing in-block completion.
+    """
+    return create_inference_card_from_fields(
+        name=args.name,
+        oracle_text=args.oracle_text,
+        mana_cost=args.mana_cost,
+        type_line=args.type_line,
+        release_year=args.release_year,
+        rarity=args.rarity,
+        set_name=args.set,
+        power=args.power,
+        toughness=args.toughness,
+        loyalty=args.loyalty,
+    )
 
 
 def inference_is_complete(card, partial_fields):
@@ -784,6 +843,162 @@ def interactive_generation_loop(model, initial_context, token_map, decoder, bloc
         print("="*80)
 
 
+def run_inference(
+    *,
+    model_path,
+    token_map_path,
+    name=None,
+    oracle_text=None,
+    mana_cost=None,
+    type_line=None,
+    release_year=None,
+    rarity=None,
+    set_name=None,
+    power=None,
+    toughness=None,
+    loyalty=None,
+    num_tokens=200,
+    seed=None,
+    max_retries=10,
+    device=None,
+    temperature=0.8,
+    top_k=50,
+    verbose=True,
+):
+    """
+    Execute full inference flow and return a generated Card.
+    """
+    if seed is not None:
+        torch.manual_seed(seed)
+    else:
+        seed = random.randint(0, 1000000)
+        if verbose:
+            print(f"Using random seed: {seed}")
+
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    if verbose:
+        print(f"Using device: {device}")
+
+    model, token_map, decoder, block_size, _vocab_size = load_model_and_token_map(
+        model_path, token_map_path, device
+    )
+
+    if verbose:
+        print("\nCreating card from provided fields...")
+    card, partial_fields = create_inference_card_from_fields(
+        name=name,
+        oracle_text=oracle_text,
+        mana_cost=mana_cost,
+        type_line=type_line,
+        release_year=release_year,
+        rarity=rarity,
+        set_name=set_name,
+        power=power,
+        toughness=toughness,
+        loyalty=loyalty,
+    )
+    if verbose:
+        print(card)
+
+    provided_fields = []
+    provided_values = {
+        "name": name,
+        "oracle_text": oracle_text,
+        "mana_cost": mana_cost,
+        "type_line": type_line,
+        "release_year": release_year,
+        "rarity": rarity,
+        "set": set_name,
+        "power": power,
+        "toughness": toughness,
+        "loyalty": loyalty,
+    }
+    for field_name, field_value in provided_values.items():
+        if field_value is not None:
+            provided_fields.append(field_name)
+
+    if verbose:
+        if provided_fields:
+            print(f"Provided fields: {', '.join(provided_fields)}")
+        else:
+            print("No fields provided - generating complete card from scratch")
+        if partial_fields:
+            print("In-block completion (...): " + ", ".join(sorted(partial_fields)))
+
+    round_num = 0
+    while round_num < max_retries:
+        partial_fields.intersection_update(get_inference_fields_for_card(card))
+        plan = build_inference_prompt_for_leftmost_gap(card, partial_fields)
+        if plan.parse_mode == "complete_card":
+            if verbose:
+                print("\nNothing left to infer for the current card.")
+            break
+
+        if verbose:
+            print("\nBuilding inference context...")
+        context_tokens = plan.prompt_tokens
+        if verbose:
+            print(f"Context tokens: {len(context_tokens)} tokens")
+
+        round_num += 1
+        if verbose:
+            print(f"\nRound {round_num}/{max_retries}")
+
+        context_token_ids = []
+        for token in context_tokens:
+            token_id = token_map.get(token, None)
+            if token_id is not None:
+                context_token_ids.append(token_id)
+            elif verbose:
+                print(f"Warning: Token '{token}' not found in token map, skipping.")
+
+        if not context_token_ids:
+            if verbose:
+                print("Warning: No valid tokens in context. Starting with begin_card_token.")
+            context_token_ids = [token_map.get(begin_card_token, 0)]
+
+        context = torch.tensor([context_token_ids], dtype=torch.long, device=device)
+        if verbose:
+            print(f"Context length: {context.shape[1]} tokens")
+
+        full_sequence, _new_tokens = generate_tokens(
+            model, context, num_tokens, block_size, temperature, top_k, device
+        )
+
+        all_token_strings = decode_tokens(full_sequence[0], decoder)
+        generated_token_strings = all_token_strings[len(context_tokens):]
+
+        if plan.parse_mode == "fim_sentinel_tail":
+            parse_generated_sentinel_tail(generated_token_strings, plan.runs, card)
+        elif plan.parse_mode == "continue_open_field":
+            prefix_toks = open_field_prefix_tokens(card, plan.open_field)
+            merged = merge_open_field_completion(
+                card, plan.open_field, prefix_toks, generated_token_strings
+            )
+            if merged:
+                partial_fields.discard(plan.open_field)
+            else:
+                print(
+                    f"Warning: did not find expected closing tag {plan.end_tag!r} "
+                    f"for field {plan.open_field!r} in this round's generation.",
+                    file=sys.stderr,
+                )
+
+        if inference_is_complete(card, partial_fields):
+            break
+
+    if not inference_is_complete(card, partial_fields) and round_num >= max_retries:
+        nxt = find_leftmost_inference_gap(card, partial_fields)
+        print(
+            f"\nStopped after max retries ({max_retries}) with inference still incomplete "
+            f"(next gap: {nxt!r}; partial ellipsis fields: {sorted(partial_fields)}).",
+            file=sys.stderr,
+        )
+
+    return card
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -925,120 +1140,28 @@ def main():
     print(f"Using device: {device}")
     
     try:
-        # Load model and token map
-        model, token_map, decoder, block_size, vocab_size = load_model_and_token_map(
-            args.model, args.token_map, device
+        card = run_inference(
+            model_path=args.model,
+            token_map_path=args.token_map,
+            name=args.name,
+            oracle_text=args.oracle_text,
+            mana_cost=args.mana_cost,
+            type_line=args.type_line,
+            release_year=args.release_year,
+            rarity=args.rarity,
+            set_name=args.set,
+            power=args.power,
+            toughness=args.toughness,
+            loyalty=args.loyalty,
+            num_tokens=args.num_tokens,
+            seed=args.seed,
+            max_retries=args.max_retries,
+            device=device,
+            temperature=args.temperature,
+            top_k=args.top_k,
+            verbose=True,
         )
-        
-        # Create card from arguments (including optional '...' in-block completion markers)
-        print("\nCreating card from provided fields...")
-        card, partial_fields = create_inference_card_from_args(args)
-        print(card)
-        
-        # Show what fields the user passed on the CLI (includes ... markers)
-        provided_fields = []
-        if args.name is not None:
-            provided_fields.append("name")
-        if args.oracle_text is not None:
-            provided_fields.append("oracle_text")
-        if args.mana_cost is not None:
-            provided_fields.append("mana_cost")
-        if args.type_line is not None:
-            provided_fields.append("type_line")
-        if args.release_year is not None:
-            provided_fields.append("release_year")
-        if args.rarity is not None:
-            provided_fields.append("rarity")
-        if args.set is not None:
-            provided_fields.append("set")
-        if args.power is not None:
-            provided_fields.append("power")
-        if args.toughness is not None:
-            provided_fields.append("toughness")
-        if args.loyalty is not None:
-            provided_fields.append("loyalty")
-        
-        if provided_fields:
-            print(f"Provided fields: {', '.join(provided_fields)}")
-        else:
-            print("No fields provided - generating complete card from scratch")
-        if partial_fields:
-            print(
-                "In-block completion (...): "
-                + ", ".join(sorted(partial_fields))
-            )
-        
-        # Iterative generate+parse until card is complete or max_retries reached
-        round_num = 0
-        while round_num < args.max_retries:
-            partial_fields.intersection_update(get_canonical_fields_for_card(card))
-            plan = build_inference_prompt_for_leftmost_gap(card, partial_fields)
-            if plan.parse_mode == "complete_card":
-                print("\nNothing left to infer for the current card.")
-                break
 
-            print("\nBuilding inference context...")
-            context_tokens = plan.prompt_tokens
-            print(f"Context tokens: {len(context_tokens)} tokens")
-            
-            round_num += 1
-            print(f"\nRound {round_num}/{args.max_retries}")
-            
-            # Convert tokens to IDs for context
-            context_token_ids = []
-            for token in context_tokens:
-                token_id = token_map.get(token, None)
-                if token_id is not None:
-                    context_token_ids.append(token_id)
-                else:
-                    print(f"Warning: Token '{token}' not found in token map, skipping.")
-            
-            if not context_token_ids:
-                print("Warning: No valid tokens in context. Starting with begin_card_token.")
-                context_token_ids = [token_map.get(begin_card_token, 0)]
-            
-            context = torch.tensor([context_token_ids], dtype=torch.long, device=device)
-            print(f"Context length: {context.shape[1]} tokens")
-            
-            full_sequence, new_tokens = generate_tokens(
-                model, context, args.num_tokens, block_size, args.temperature, args.top_k, device
-            )
-            
-            # Decode generated part only (tokens after the prompt)
-            all_token_strings = decode_tokens(full_sequence[0], decoder)
-            generated_token_strings = all_token_strings[len(context_tokens):]
-
-            if plan.parse_mode == "fim_sentinel_tail":
-                parse_generated_sentinel_tail(generated_token_strings, plan.runs, card)
-            elif plan.parse_mode == "continue_open_field":
-                prefix_toks = open_field_prefix_tokens(card, plan.open_field)
-                merged = merge_open_field_completion(
-                    card, plan.open_field, prefix_toks, generated_token_strings
-                )
-                if merged:
-                    partial_fields.discard(plan.open_field)
-                else:
-                    print(
-                        f"Warning: did not find expected closing tag {plan.end_tag!r} "
-                        f"for field {plan.open_field!r} in this round's generation.",
-                        file=sys.stderr,
-                    )
-
-            if inference_is_complete(card, partial_fields):
-                break
-        
-        if (
-            not inference_is_complete(card, partial_fields)
-            and round_num >= args.max_retries
-        ):
-            nxt = find_leftmost_inference_gap(card, partial_fields)
-            print(
-                f"\nStopped after max retries ({args.max_retries}) with inference still incomplete "
-                f"(next gap: {nxt!r}; partial ellipsis fields: {sorted(partial_fields)}).",
-                file=sys.stderr,
-            )
-        
-        # Print card (complete or partial)
         print_card(card)
     
     except FileNotFoundError as e:

@@ -455,6 +455,11 @@ def main():
         help='Number of evaluation intervals to wait before early stopping (default: 5)'
     )
     parser.add_argument(
+        '--no-early-stopping',
+        action='store_true',
+        help='Train for the full --max-iters without stopping when validation loss stops improving'
+    )
+    parser.add_argument(
         '--warmup-steps',
         type=int,
         default=500,
@@ -556,6 +561,7 @@ def main():
             'n_head': args.n_head,
             'n_embd': args.n_embd,
             'early_stop_patience': args.early_stop_patience,
+            'early_stopping': not args.no_early_stopping,
             'seed': args.seed,
             'grad_clip_max_norm': GRAD_CLIP_MAX_NORM,
         },
@@ -669,9 +675,14 @@ def main():
                 print(f"  -> New best validation loss: {best_val_loss:.4f}")
             else:
                 patience_counter += 1
-                print(f"  -> No improvement ({patience_counter}/{args.early_stop_patience})")
+                if args.no_early_stopping:
+                    print(f"  -> No improvement ({patience_counter} evals since last best; early stopping off)")
+                else:
+                    print(f"  -> No improvement ({patience_counter}/{args.early_stop_patience})")
 
-            will_break = patience_counter >= args.early_stop_patience
+            will_break = (
+                not args.no_early_stopping and patience_counter >= args.early_stop_patience
+            )
 
             gen_rel = None
             gen_temperature = 1.0

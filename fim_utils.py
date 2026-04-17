@@ -86,6 +86,22 @@ def get_canonical_fields_for_card(card):
     return [f for f in CANONICAL_FIELD_ORDER if f in available]
 
 
+def get_inference_fields_for_card(card):
+    """
+    Return canonical fields that should be considered by inference gap-planning.
+    Unlike get_canonical_fields_for_card, this includes optional fields that are
+    implied by type_line even when currently missing (e.g. creature power/toughness).
+    """
+    fields = {"name", "mana_cost", "type_line", "release_year", "rarity", "set", "oracle_text"}
+    type_line = card.type_line or ""
+    if "Creature" in type_line or "Vehicle" in type_line or "Spacecraft" in type_line:
+        fields.add("power")
+        fields.add("toughness")
+    if "Planeswalker" in type_line:
+        fields.add("loyalty")
+    return [f for f in CANONICAL_FIELD_ORDER if f in fields]
+
+
 def _compute_runs(canonical_fields, mask_set):
     """
     Compute runs of consecutive masked fields.
@@ -279,7 +295,7 @@ def normalize_inference_string_field(field_name, raw, warn_fn=None):
 
 def _field_applies_in_inference_order(card, field_name):
     """Whether this canonical field participates in ordering for this card."""
-    return field_name in get_canonical_fields_for_card(card)
+    return field_name in get_inference_fields_for_card(card)
 
 
 def _field_is_gap(card, field_name, partial_fields):
